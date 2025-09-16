@@ -1,0 +1,155 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Client - Approve Timesheets</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="brand">Mega Construct</div>
+    <nav class="top-links">
+      <a href="/staff.html">Staff</a>
+      <a href="/client.html">Client</a>
+      <a href="/owner.html">Owner</a>
+    </nav>
+  </header>
+
+  <main class="center">
+    <section class="card">
+      <h2>Client - Approve Timesheets</h2>
+      <div>
+        <label>Email <input id="email" /></label>
+        <label>Password <input id="password" type="password" /></label>
+        <div style="margin-top:8px">
+          <button id="login">Login</button>
+          <button id="logout" style="display:none">Logout</button>
+        </div>
+      </div>
+
+      <hr/>
+      <div id="pendingList" style="display:none">
+        <h3>Pending</h3>
+        <button id="refreshPending">Refresh pending</button>
+        <ul id="items"></ul>
+      </div>
+      <div id="historyList" style="display:none">
+        <h3>History (approved)</h3>
+        <button id="refreshHistory">Refresh history</button>
+        <ul id="historyItems"></ul>
+      </div>
+    </section>
+  </main>
+
+  <script>
+  let token = localStorage.getItem('token') || null;
+  async function verifyAndInit() {
+    if (!token) return;
+    try {
+      const me = await fetch('/api/me', { headers: { 'authorization': 'Bearer '+token } });
+      if (!me.ok) { token = null; localStorage.removeItem('token'); return; }
+      const u = await me.json();
+      if (u.role !== 'client') { token = null; localStorage.removeItem('token'); return; }
+      // verified client
+      document.getElementById('logout').style.display='inline-block';
+      document.getElementById('pendingList').style.display='block';
+      document.getElementById('historyList').style.display='block';
+      // load staff map first
+      await loadStaffs();
+      await loadPending();
+      await loadHistory();
+    } catch (e) { token = null; localStorage.removeItem('token'); }
+  }
+
+  document.getElementById('login').onclick = async () => {
+      const email = document.getElementById('email').value;
+      const password = document.getElementById('password').value;
+      const res = await fetch('/api/login', { method: 'POST', headers: {'content-type':'application/json'}, body: JSON.stringify({ email, password }) });
+      const j = await res.json();
+      if (j.token) {
+        token = j.token; localStorage.setItem('token', token);
+        document.getElementById('logout').style.display='inline-block';
+        showToast('Logged in');
+        // load staff mapping then lists
+        await loadStaffs();
+        document.getElementById('pendingList').style.display='block';
+        document.getElementById('historyList').style.display='block';
+        await loadPending(); await loadHistory();
+      } else alert(JSON.stringify(j));
+    }
+  document.getElementById('logout').onclick = () => { token=null; localStorage.removeItem('token'); location.href='/' }
+
+    // forgot password -> request reset
+    const forgotBtn = document.createElement('button'); forgotBtn.textContent='Forgot password';
+    forgotBtn.onclick = async () => {
+      const e = prompt('Enter your email for password reset');
+      if (!e) return;
+      const r = await fetch('/api/password-reset/request', { method: 'POST', headers: {'content-type':'application/json'}, body: JSON.stringify({ email: e }) });
+      const j = await r.json(); alert(JSON.stringify(j));
+    }
+  document.querySelector('.card > div').appendChild(forgotBtn);
+  function showToast(msg, ok=true) {
+    const el = document.createElement('div'); el.className = 'toast'; el.textContent = msg; el.style.background = ok ? '#e6ffea' : '#ffe6e6'; el.style.border = '1px solid #ccc'; el.style.padding='8px'; el.style.margin='8px 0';
+    document.querySelector('.card').insertBefore(el, document.querySelector('.card').firstChild);
+    setTimeout(()=>el.remove(), 4000);
+  }
+  // load staff mapping for friendly names
+  const staffMap = {};
+  async function loadStaffs() {
+    try {
+      const r = await fetch('/api/staffs', { headers: { 'authorization': 'Bearer '+token } });
+      if (!r.ok) return;
+      const rows = await r.json();
+      rows.forEach(s => {
+        const label = `${s.name} (${s.email})`;
+        staffMap[s.id] = label;
+        staffMap[String(s.id)] = label;
+      });
+    } catch (e) { console.error(e); }
+  }
+
+  // verify token on load and initialize UI only after verification
+  verifyAndInit();
+    async function loadPending() {
+      const res = await fetch('/api/timesheets/pending', { headers: { 'authorization': 'Bearer '+token } });
+      const items = await res.json();
+      const ul = document.getElementById('items'); ul.innerHTML='';
+      items.forEach(t => {
+        const li = document.createElement('li');
+        // prefer server-provided staff_name, fallback to staffMap or id
+        const sid = (t.staff_id || t.staffId || '') + '';
+        const staffName = t.staff_name || staffMap[sid] || staffMap[Number(sid)] || sid || 'unknown';
+        li.textContent = `${t.date} - ${t.hours}h by ${staffName} - ${t.notes}`;
+        const btn = document.createElement('button'); btn.textContent='Approve';
+        btn.onclick = async () => {
+          try {
+            const r = await fetch('/api/timesheets/'+t.id+'/approve', { method: 'POST', headers: {'authorization':'Bearer '+token} });
+            const j = await r.json();
+            if (r.ok) {
+              showToast('Approved');
+              loadPending(); loadHistory();
+            } else showToast('Approve failed: '+(j.error||JSON.stringify(j)), false);
+          } catch (e) { console.error(e); showToast('Approve failed', false); }
+        }
+        li.appendChild(btn);
+        ul.appendChild(li);
+      });
+    }
+
+    async function loadHistory() {
+      const res = await fetch('/api/timesheets/client/history', { headers: { 'authorization': 'Bearer '+token } });
+      const items = await res.json();
+      const ul = document.getElementById('historyItems'); ul.innerHTML='';
+      items.forEach(t => {
+        const sid = (t.staff_id || t.staffId || '') + '';
+        const staffName = t.staff_name || staffMap[sid] || staffMap[Number(sid)] || sid || 'unknown';
+        const li = document.createElement('li'); li.textContent = `${t.date} - ${t.hours}h by ${staffName} - ${t.notes} (status ${t.status})`; ul.appendChild(li);
+      });
+    }
+
+    document.getElementById('refreshPending').onclick = loadPending;
+    document.getElementById('refreshHistory').onclick = loadHistory;
+  </script>
+</body>
+</html>

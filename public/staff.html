@@ -1,0 +1,171 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Staff - Submit Timesheet</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="brand">Mega Construct</div>
+    <nav class="top-links">
+      <a href="/staff.html">Staff</a>
+      <a href="/client.html">Client</a>
+      <a href="/owner.html">Owner</a>
+    </nav>
+  </header>
+
+  <main class="center">
+    <section class="card">
+      <h2>Staff - Submit Timesheet</h2>
+      <div>
+        <label>Email <input id="email" /></label>
+        <label>Password <input id="password" type="password" /></label>
+        <div style="margin-top:8px">
+          <button id="login">Login</button>
+          <button id="logout" style="display:none">Logout</button>
+        </div>
+      </div>
+
+      <hr/>
+      <div id="form" style="display:none">
+        <label>Date <input id="date" type="date" /></label>
+        <label>Hours <input id="hours" type="number" /></label>
+        <label>Client <select id="clientId"></select></label>
+        <label>Notes <input id="notes" /></label>
+        <button id="submit">Submit Timesheet</button>
+      </div>
+      <hr />
+      <div>
+        <h3>Pending submissions</h3>
+        <button id="loadPending">Refresh pending</button>
+        <ul id="pending"></ul>
+      </div>
+      <div>
+        <h3>History (all submissions)</h3>
+        <button id="loadHistory">Refresh history</button>
+        <ul id="history"></ul>
+      </div>
+    </section>
+  </main>
+
+  <script>
+  let token = localStorage.getItem('token') || null;
+  async function verifyAndInit() {
+    if (!token) return;
+    try {
+      const me = await fetch('/api/me', { headers: { 'authorization': 'Bearer '+token } });
+      if (!me.ok) { token = null; localStorage.removeItem('token'); return; }
+      const u = await me.json();
+      if (u.role !== 'staff') { token = null; localStorage.removeItem('token'); return; }
+      // load clients and lock selection to associated client
+      await loadClients();
+      document.getElementById('logout').style.display='inline-block';
+      document.getElementById('form').style.display='block';
+      await loadPending(); await loadHistory();
+    } catch (e) { token = null; localStorage.removeItem('token'); }
+  }
+
+  document.getElementById('login').onclick = async () => {
+      const email = document.getElementById('email').value;
+      const password = document.getElementById('password').value;
+      const res = await fetch('/api/login', { method: 'POST', headers: {'content-type':'application/json'}, body: JSON.stringify({ email, password }) });
+      const j = await res.json();
+      if (j.token) { token = j.token; localStorage.setItem('token', token); document.getElementById('logout').style.display='inline-block'; showToast('Logged in'); await loadClients(); document.getElementById('form').style.display='block'; loadPending(); loadHistory(); }
+      else alert(JSON.stringify(j));
+    }
+  document.getElementById('logout').onclick = () => { token=null; localStorage.removeItem('token'); location.href='/' }
+
+    // forgot password -> request reset
+    const forgotBtn = document.createElement('button'); forgotBtn.textContent='Forgot password';
+    forgotBtn.onclick = async () => {
+      const e = prompt('Enter your email for password reset');
+      if (!e) return;
+      const r = await fetch('/api/password-reset/request', { method: 'POST', headers: {'content-type':'application/json'}, body: JSON.stringify({ email: e }) });
+      const j = await r.json(); alert(JSON.stringify(j));
+    }
+    document.querySelector('.card > div').appendChild(forgotBtn);
+    function showToast(msg, ok=true) {
+      const el = document.createElement('div'); el.className = 'toast'; el.textContent = msg; el.style.background = ok ? '#e6ffea' : '#ffe6e6'; el.style.border = '1px solid #ccc'; el.style.padding='8px'; el.style.margin='8px 0';
+      document.querySelector('.card').insertBefore(el, document.querySelector('.card').firstChild);
+      setTimeout(()=>el.remove(), 4000);
+    }
+
+    document.getElementById('submit').onclick = async () => {
+      const date = document.getElementById('date').value;
+      const hours = Number(document.getElementById('hours').value);
+      const clientId = document.getElementById('clientId').value;
+      const notes = document.getElementById('notes').value;
+      try {
+        const res = await fetch('/api/timesheets', { method: 'POST', headers: {'content-type':'application/json','authorization':'Bearer '+token}, body: JSON.stringify({ date, hours, clientId, notes }) });
+        const j = await res.json();
+        if (res.ok) { showToast('Timesheet submitted'); loadPending(); loadHistory(); }
+        else showToast('Submission failed: ' + (j.error || JSON.stringify(j)), false);
+      } catch (e) { console.error(e); showToast('Submission failed', false); }
+    }
+
+    const clientsMap = {};
+    async function loadClients() {
+      try {
+        const r = await fetch('/api/clients', { headers: { 'authorization': 'Bearer '+token } });
+        const rows = await r.json();
+        const sel = document.getElementById('clientId'); sel.innerHTML='';
+        rows.forEach(c => {
+          // populate friendly-name map with both string and numeric keys
+          const label = `${c.name} (${c.email})`;
+          clientsMap[c.id] = label;
+          clientsMap[String(c.id)] = label;
+          const o = document.createElement('option'); o.value = c.id; o.textContent = label; sel.appendChild(o);
+        });
+        // if current user has an associated client, lock selection
+        try {
+          const me = await fetch('/api/me', { headers: { 'authorization': 'Bearer '+token } });
+          if (me.ok) {
+            const u = await me.json();
+            if (u.client_id) {
+              sel.value = u.client_id;
+              sel.disabled = true;
+            }
+          }
+        } catch (e) { /* ignore */ }
+      } catch (e) { console.error(e); }
+    }
+
+    async function loadPending() {
+      try {
+        const r = await fetch('/api/timesheets/staff/pending', { headers: { 'authorization': 'Bearer '+token } });
+        const rows = await r.json();
+        const ul = document.getElementById('pending'); ul.innerHTML='';
+        rows.forEach(t => {
+          const li = document.createElement('li');
+          const cid = (t.client_id || t.clientId || t.client || '') + '';
+          const clientName = clientsMap[cid] || clientsMap[Number(cid)] || cid || 'unknown';
+          li.textContent = `${t.date} - ${t.hours}h -> ${t.notes} (client ${clientName})`;
+          ul.appendChild(li);
+        });
+      } catch (e) { console.error(e); }
+    }
+
+    async function loadHistory() {
+      try {
+        const r = await fetch('/api/timesheets/staff', { headers: { 'authorization': 'Bearer '+token } });
+        const rows = await r.json();
+        const ul = document.getElementById('history'); ul.innerHTML='';
+        rows.forEach(t => {
+          const li = document.createElement('li');
+          const cid = (t.client_id || t.clientId || t.client || '') + '';
+          const clientName = clientsMap[cid] || clientsMap[Number(cid)] || cid || 'unknown';
+          li.textContent = `${t.date} - ${t.hours}h - ${t.status} (client ${clientName})`;
+          ul.appendChild(li);
+        });
+      } catch (e) { console.error(e); }
+    }
+
+    document.getElementById('loadPending').onclick = loadPending;
+    document.getElementById('loadHistory').onclick = loadHistory;
+    // verify token and initialize only after verification
+    verifyAndInit();
+  </script>
+</body>
+</html>

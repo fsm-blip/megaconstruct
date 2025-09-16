@@ -1,0 +1,246 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Owner - View Approved Timesheets</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="brand">Mega Construct</div>
+    <nav class="top-links">
+      <a href="/staff.html">Staff</a>
+      <a href="/client.html">Client</a>
+      <a href="/owner.html">Owner</a>
+    </nav>
+  </header>
+
+  <main class="center">
+    <section class="card">
+      <h2>Owner - View Approved Timesheets</h2>
+      <div>
+        <label>Email <input id="email" /></label>
+        <label>Password <input id="password" type="password" /></label>
+        <div style="margin-top:8px">
+          <button id="login">Login</button>
+          <button id="logout" style="display:none">Logout</button>
+        </div>
+      </div>
+
+      <hr/>
+      <div id="ownerPanel" style="display:none">
+        <h3>Users</h3>
+        <div>
+          <input id="newName" placeholder="name" />
+          <input id="newEmail" placeholder="email" />
+          <input id="newPassword" placeholder="password" />
+          <select id="newRole"><option value="staff">staff</option><option value="client">client</option></select>
+          <select id="newClient" style="display:none"></select>
+          <button id="createUser">Create user</button>
+        </div>
+        <button id="refreshUsers">Refresh users</button>
+        <ul id="users"></ul>
+        <!-- Modal for former user timesheets -->
+        <div id="formerModal" class="modal" style="display:none; position:fixed; left:0;top:0;right:0;bottom:0;background:rgba(0,0,0,0.4);">
+          <div style="background:#fff; max-width:800px; margin:40px auto; padding:16px; border-radius:6px;">
+            <h4 id="formerUserName">Former user timesheets</h4>
+            <div id="formerUserActions" style="margin-bottom:8px"></div>
+            <ul id="formerUserTimes"></ul>
+            <button id="closeFormer">Close</button>
+          </div>
+        </div>
+
+  <h3>Pending Timesheets</h3>
+  <button id="refreshPendingTimes">Refresh pending timesheets</button>
+  <ul id="pendingTimes"></ul>
+  <h3>All History</h3>
+  <button id="refreshTimes">Refresh timesheets</button>
+  <button id="clearAll">Clear all timesheets</button>
+  <ul id="times"></ul>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    let token = localStorage.getItem('token') || null;
+    const setLoggedIn = (on) => {
+      document.getElementById('logout').style.display = on ? 'inline-block' : 'none';
+      document.getElementById('ownerPanel').style.display = on ? 'block' : 'none';
+    }
+
+    document.getElementById('login').onclick = async () => {
+      const email = document.getElementById('email').value;
+      const password = document.getElementById('password').value;
+      const res = await fetch('/api/login', { method: 'POST', headers: {'content-type':'application/json'}, body: JSON.stringify({ email, password }) });
+      const j = await res.json();
+      if (j.token) {
+        token = j.token; localStorage.setItem('token', token);
+        alert('Logged in'); setLoggedIn(true);
+        await loadClientsForOwner();
+        loadUsers(); loadTimes();
+      } else alert(JSON.stringify(j));
+    }
+
+  document.getElementById('logout').onclick = () => { token = null; localStorage.removeItem('token'); setLoggedIn(false); location.href='/'; }
+
+    const idToName = {};
+    let staffList = [];
+  let clientsList = [];
+    async function loadStaffs() {
+      try {
+        const r = await fetch('/api/staffs', { headers: { 'authorization': 'Bearer '+token } });
+        if (r.ok) { staffList = await r.json(); }
+      } catch (e) { console.error(e); }
+    }
+    async function loadUsers() {
+      try {
+        const res = await fetch('/api/users', { headers: { 'authorization': 'Bearer '+token } });
+        const rows = await res.json();
+        const ul = document.getElementById('users'); ul.innerHTML='';
+        rows.forEach(u => {
+          idToName[u.id] = u.name;
+          const li = document.createElement('li');
+          let clientPart = '';
+          if (u.client_id) {
+            const c = clientsList.find(x=>x.id===u.client_id);
+            clientPart = c ? ` - client: ${c.name} (${c.email})` : ` - client: ${u.client_id}`;
+          }
+          li.textContent = `${u.name} (${u.email}) - ${u.role}${clientPart}`;
+          const del = document.createElement('button'); del.textContent='Delete';
+          del.onclick = async () => {
+            if(!confirm('Delete user?')) return;
+            try {
+              const res = await fetch('/api/users/'+u.id, { method: 'DELETE', headers: { 'authorization': 'Bearer '+token } });
+              if (res.status === 409) {
+                const body = await res.json();
+                // show former user timesheets modal
+                document.getElementById('formerModal').style.display='block';
+                document.getElementById('formerUserName').textContent = `Timesheets for ${u.name} (${u.email})`;
+                const ful = document.getElementById('formerUserTimes'); ful.innerHTML='';
+                // prepare modal actions
+                document.getElementById('formerUserName').textContent = `Timesheets for ${u.name} (${u.email})`;
+                const act = document.getElementById('formerUserActions'); act.innerHTML = '';
+                const forceBtn = document.createElement('button'); forceBtn.textContent = 'Force delete user (delete user and keep timesheets)';
+                forceBtn.onclick = async () => { if(!confirm('Force delete user? This will delete the user but keep timesheets.')) return; await fetch('/api/users/'+u.id+'?force=true', { method: 'DELETE', headers: { 'authorization': 'Bearer '+token } }); document.getElementById('formerModal').style.display='none'; loadUsers(); loadTimes(); };
+                act.appendChild(forceBtn);
+                // list timesheets with per-item actions
+                (body.timesheets || []).forEach(t => {
+                  const li2 = document.createElement('li');
+                  const staffName = idToName[t.staff_id] || t.staff_id || 'unknown';
+                  const clientName = idToName[t.client_id] || t.client_id || 'unknown';
+                  li2.textContent = `${t.date} - ${t.hours}h by ${staffName} for ${clientName} - ${t.notes || ''} (status: ${t.status})`;
+                  // actions: reassign, archive, delete timesheet
+                  const re = document.createElement('button'); re.textContent='Reassign';
+                  re.onclick = async () => {
+                    const sel = document.createElement('select');
+                    staffList.forEach(s => { const o = document.createElement('option'); o.value=s.id; o.textContent = `${s.name} (${s.email})`; sel.appendChild(o); });
+                    const choice = prompt('Enter staff id to reassign (or leave blank to use selection)');
+                    let toId = choice;
+                    if (!toId) toId = sel.value;
+                    if (!toId) return alert('No staff chosen');
+                    const rr = await fetch('/api/timesheets/'+t.id+'/reassign', { method: 'POST', headers: {'content-type':'application/json','authorization':'Bearer '+token}, body: JSON.stringify({ toStaffId: toId }) });
+                    if (rr.ok) { alert('Reassigned'); loadTimes(); }
+                    else { const jj = await rr.json(); alert('Reassign failed: '+(jj.error||JSON.stringify(jj))); }
+                  };
+                  const ar = document.createElement('button'); ar.textContent='Archive';
+                  ar.onclick = async () => { if(!confirm('Archive timesheet?')) return; const rr = await fetch('/api/timesheets/'+t.id+'/archive', { method: 'POST', headers: {'authorization':'Bearer '+token} }); if (rr.ok) { alert('Archived'); loadTimes(); } else { const jj=await rr.json(); alert('Archive failed: '+(jj.error||JSON.stringify(jj))); } };
+                  const dt = document.createElement('button'); dt.textContent='Delete'; dt.onclick = async () => { if(!confirm('Delete timesheet?')) return; const rr = await fetch('/api/timesheets/'+t.id, { method: 'DELETE', headers: {'authorization':'Bearer '+token} }); if (rr.ok) { alert('Deleted'); loadTimes(); } else { const jj = await rr.json(); alert('Delete failed: '+(jj.error||JSON.stringify(jj))); } };
+                  li2.appendChild(re); li2.appendChild(ar); li2.appendChild(dt);
+                  ful.appendChild(li2);
+                });
+                return;
+              }
+              // deleted OK, refresh
+              showToast('User deleted');
+              loadUsers();
+            } catch (e) { console.error(e); alert('Delete failed'); }
+          }
+          li.appendChild(del);
+          ul.appendChild(li);
+        });
+      } catch (e) { console.error(e); alert('Failed to load users'); }
+    }
+
+  document.getElementById('refreshUsers').onclick = loadUsers;
+  // bootstrap clients and staff for owner (for create-user client selector and reassign options)
+  (async ()=>{ if (token) { await loadClientsForOwner(); await loadStaffs(); loadUsers(); loadTimes(); } })();
+    function showToast(msg, ok=true) {
+      const el = document.createElement('div'); el.className = 'toast'; el.textContent = msg; el.style.background = ok ? '#e6ffea' : '#ffe6e6'; el.style.border = '1px solid #ccc'; el.style.padding='8px'; el.style.margin='8px 0';
+      document.querySelector('.card').insertBefore(el, document.querySelector('.card').firstChild);
+      setTimeout(()=>el.remove(), 4000);
+    }
+
+    async function loadClientsForOwner() {
+      try {
+        const r = await fetch('/api/clients', { headers: { 'authorization': 'Bearer '+token } });
+        clientsList = await r.json();
+        const sel = document.getElementById('newClient'); sel.innerHTML='';
+        clientsList.forEach(c => { const o = document.createElement('option'); o.value=c.id; o.textContent = `${c.name} (${c.email})`; sel.appendChild(o); });
+        // if more than one client, show selector when creating staff
+        document.getElementById('newRole').onchange = () => { document.getElementById('newClient').style.display = document.getElementById('newRole').value === 'staff' && clientsList.length > 0 ? 'inline-block' : 'none'; }
+      } catch (e) { console.error(e); }
+    }
+
+    document.getElementById('createUser').onclick = async () => {
+      const name = document.getElementById('newName').value;
+      const email = document.getElementById('newEmail').value;
+      const password = document.getElementById('newPassword').value;
+      const role = document.getElementById('newRole').value;
+      const clientId = document.getElementById('newClient').value || null;
+      // optimistic toast
+      const toastEl = document.createElement('div'); toastEl.className='toast'; toastEl.textContent = 'Creating user...'; toastEl.style.background='#fff4cc'; toastEl.style.padding='8px'; toastEl.style.border='1px solid #ccc'; document.querySelector('.card').insertBefore(toastEl, document.querySelector('.card').firstChild);
+      try {
+        const res = await fetch('/api/users', { method: 'POST', headers: {'content-type':'application/json','authorization':'Bearer '+token}, body: JSON.stringify({ name, email, password, role, clientId }) });
+        const j = await res.json();
+        if (res.ok && j.id) { toastEl.textContent = 'User created'; toastEl.style.background='#e6ffea'; setTimeout(()=>toastEl.remove(),2000); loadUsers(); }
+        else { toastEl.textContent = 'Create failed: '+(j.error||JSON.stringify(j)); toastEl.style.background='#ffe6e6'; setTimeout(()=>toastEl.remove(),4000); }
+      } catch (e) { console.error(e); toastEl.textContent='Create failed'; toastEl.style.background='#ffe6e6'; setTimeout(()=>toastEl.remove(),4000); }
+    }
+
+    async function loadTimes() {
+      try {
+        const res = await fetch('/api/timesheets/approved', { headers: { 'authorization': 'Bearer '+token } });
+        const rows = await res.json();
+        const ul = document.getElementById('times'); ul.innerHTML='';
+        // sort latest first
+        rows.sort((a,b)=> new Date(b.approved_at || b.created_at) - new Date(a.approved_at || a.created_at));
+        rows.forEach(t => {
+          // skip timesheets where staff or client no longer exists (former users) — those are shown via modal only
+          const staffExists = !!idToName[t.staff_id];
+          const clientExists = !!idToName[t.client_id];
+          if (!staffExists || !clientExists) return;
+          const li = document.createElement('li');
+          const staffName = idToName[t.staff_id] || t.staff_id || t.staffId || 'unknown';
+          const clientName = idToName[t.client_id] || t.client_id || t.clientId || 'unknown';
+          li.textContent = `${t.date} - ${t.hours}h by ${staffName} for ${clientName} - ${t.notes || ''}`;
+          const del = document.createElement('button'); del.textContent='Delete';
+          del.onclick = async () => { if(!confirm('Delete timesheet?')) return; await fetch('/api/timesheets/'+t.id, { method: 'DELETE', headers: {'authorization':'Bearer '+token} }); loadTimes(); }
+          li.appendChild(del);
+          ul.appendChild(li);
+        })
+      } catch (e) { console.error(e); alert('Failed to load timesheets'); }
+    }
+
+    async function loadPendingTimes() {
+      try {
+        const res = await fetch('/api/timesheets/owner/pending', { headers: { 'authorization': 'Bearer '+token } });
+        const rows = await res.json();
+        const ul = document.getElementById('pendingTimes'); ul.innerHTML='';
+        rows.forEach(t => {
+          const staffExists = !!idToName[t.staff_id];
+          const clientExists = !!idToName[t.client_id];
+          if (!staffExists || !clientExists) return;
+          const li = document.createElement('li'); const staffName = idToName[t.staff_id] || t.staff_id || t.staffId || 'unknown'; const clientName = idToName[t.client_id] || t.client_id || t.clientId || 'unknown'; li.textContent = `${t.date} - ${t.hours}h by ${staffName} for ${clientName} - ${t.notes || ''}`; ul.appendChild(li);
+        });
+      } catch (e) { console.error(e); alert('Failed to load pending times'); }
+    }
+
+  document.getElementById('refreshPendingTimes').onclick = loadPendingTimes;
+  document.getElementById('closeFormer').onclick = () => { document.getElementById('formerModal').style.display='none'; }
+
+    document.getElementById('refreshTimes').onclick = loadTimes;
+    document.getElementById('clearAll').onclick = async () => { if(!confirm('Clear all timesheets?')) return; await fetch('/api/timesheets', { method: 'DELETE', headers: {'authorization':'Bearer '+token} }); loadTimes(); }
+  </script>
+</body>
+</html>

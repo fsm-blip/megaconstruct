@@ -1,0 +1,2 @@
+Server running on http://localhost:3000
+Postgres not available or connection failed, falling back to SQLite: 
