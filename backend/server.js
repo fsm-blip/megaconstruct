@@ -7,6 +7,7 @@ const jwt = require('jsonwebtoken');
 const nodemailer = require('nodemailer');
 const path = require('path');
 const { Pool } = require('pg');
+const { nanoid } = require('nanoid');
 const Database = require('better-sqlite3');
 require('dotenv').config();
 
@@ -21,7 +22,12 @@ async function initDb() {
   // Try Postgres first if DATABASE_URL is set, otherwise try default Postgres connection
   const tryConn = process.env.DATABASE_URL || 'postgres://postgres:pass@localhost:5432/megaconstruct';
   try {
-    pool = new Pool({ connectionString: tryConn });
+    // When running in production (Vercel/Supabase) we need to enable TLS/SSL.
+    const poolConfig = { connectionString: tryConn };
+    if (process.env.NODE_ENV === 'production') {
+      poolConfig.ssl = { rejectUnauthorized: false };
+    }
+    pool = new Pool(poolConfig);
     await pool.query('SELECT 1');
     console.log('Connected to Postgres');
   } catch (e) {
