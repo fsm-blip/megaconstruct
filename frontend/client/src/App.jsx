@@ -147,30 +147,47 @@ function ClientPanel({ token }) {
 function OwnerPanel({ token }) {
   const [timesheets, setTimesheets] = useState([])
   const [users, setUsers] = useState([])
+  const [clients, setClients] = useState([])
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [role, setRole] = useState('staff')
+  const [selectedClientId, setSelectedClientId] = useState('')
+  const [viewMode, setViewMode] = useState('approved') // 'approved' or 'pending'
 
-  async function loadTimesheets() {
-    const res = await axios.get(`${API}/api/timesheets/approved`, { headers: { Authorization: `Bearer ${token}` } })
-    // sort by approved_at or created_at descending
-    const rows = res.data.sort((a,b)=> new Date(b.approved_at || b.created_at) - new Date(a.approved_at || a.created_at))
-    setTimesheets(rows)
+  async function loadTimesheets(mode = 'approved') {
+    try {
+      const url = mode === 'pending' ? `${API}/api/timesheets/owner/pending` : `${API}/api/timesheets/approved`
+      const res = await axios.get(url, { headers: { Authorization: `Bearer ${token}` } })
+      const rows = res.data.sort((a,b)=> new Date(b.approved_at || b.created_at) - new Date(a.approved_at || a.created_at))
+      setTimesheets(rows)
+    } catch (e) { console.error('loadTimesheets', e); alert('Failed loading timesheets') }
   }
 
   async function loadUsers() {
-    const res = await axios.get(`${API}/api/users`, { headers: { Authorization: `Bearer ${token}` } })
-    setUsers(res.data)
+    try {
+      const res = await axios.get(`${API}/api/users`, { headers: { Authorization: `Bearer ${token}` } })
+      setUsers(res.data)
+    } catch (e) { console.error('loadUsers', e); alert('Failed loading users') }
+  }
+
+  async function loadClients() {
+    try {
+      const res = await axios.get(`${API}/api/clients`, { headers: { Authorization: `Bearer ${token}` } })
+      setClients(res.data)
+      if (res.data[0]) setSelectedClientId(res.data[0].id)
+    } catch (e) { console.error('loadClients', e); }
   }
 
   async function createUser() {
     try {
-      await axios.post(`${API}/api/users`, { name, email, password, role }, { headers: { Authorization: `Bearer ${token}` } })
+      const payload = { name, email, password, role }
+      if (role === 'staff' && selectedClientId) payload.clientId = selectedClientId
+      await axios.post(`${API}/api/users`, payload, { headers: { Authorization: `Bearer ${token}` } })
       alert('User created (invitation sent)')
       setName(''); setEmail(''); setPassword('')
-      loadUsers()
-    } catch (e) { alert('Create failed') }
+      loadUsers(); loadClients()
+    } catch (e) { console.error('createUser', e); alert('Create failed') }
   }
 
   async function deleteUser(id) {
@@ -178,26 +195,49 @@ function OwnerPanel({ token }) {
     try {
       await axios.delete(`${API}/api/users/${id}`, { headers: { Authorization: `Bearer ${token}` } })
       loadUsers()
-    } catch (e) { alert('Delete failed') }
+    } catch (e) {
+      // if user has timesheets, server returns 409 with timesheets payload
+      if (e.response && e.response.status === 409) {
+        const proceed = confirm('User has timesheets. Delete and remove timesheets? This is irreversible.')
+        if (proceed) {
+          try {
+            await axios.delete(`${API}/api/users/${id}?force=true`, { headers: { Authorization: `Bearer ${token}` } })
+            alert('User deleted (with timesheets)')
+            loadUsers()
+            return
+          } catch (err) { console.error('force delete', err); alert('Force delete failed') }
+        }
+      }
+      console.error('deleteUser', e)
+      alert('Delete failed')
+    }
   }
 
   async function clearTimesheet(id) {
-    if (id) {
-      if (!confirm('Delete this timesheet?')) return
-      await axios.delete(`${API}/api/timesheets/${id}`, { headers: { Authorization: `Bearer ${token}` } })
-    } else {
-      if (!confirm('Delete ALL timesheets?')) return
-      await axios.delete(`${API}/api/timesheets`, { headers: { Authorization: `Bearer ${token}` } })
-    }
-    loadTimesheets()
+    try {
+      if (id) {
+        if (!confirm('Delete this timesheet?')) return
+        await axios.delete(`${API}/api/timesheets/${id}`, { headers: { Authorization: `Bearer ${token}` } })
+      } else {
+        if (!confirm('Delete ALL timesheets?')) return
+        await axios.delete(`${API}/api/timesheets`, { headers: { Authorization: `Bearer ${token}` } })
+      }
+      loadTimesheets(viewMode)
+    } catch (e) { console.error('clearTimesheet', e); alert('Failed clearing timesheets') }
   }
 
-  // group timesheets by staff name
+  // build a quick lookup for user names
+  const userMap = users.reduce((acc, u) => { acc[u.id] = u; return acc }, {})
+
+  // group timesheets by staff id
   const grouped = timesheets.reduce((acc, t) => {
     acc[t.staff_id] = acc[t.staff_id] || []
     acc[t.staff_id].push(t)
     return acc
   }, {})
+
+  // initial load
+  React.useEffect(()=>{ if (token) { loadUsers(); loadClients(); loadTimesheets(viewMode); } }, [token])
 
   return (
     <div className="card">
@@ -212,6 +252,14 @@ function OwnerPanel({ token }) {
             <option value="staff">staff</option>
             <option value="client">client</option>
           </select>
+          {role === 'staff' && (
+            <div>
+              <label>Assign client</label>
+              <select value={selectedClientId} onChange={e=>setSelectedClientId(e.target.value)}>
+                {clients.map(c=> <option key={c.id} value={c.id}>{c.name} ({c.email})</option>)}
+              </select>
+            </div>
+          )}
           <button onClick={createUser}>Create</button>
           <hr />
           <button onClick={loadUsers}>Refresh users</button>
@@ -222,15 +270,18 @@ function OwnerPanel({ token }) {
           </ul>
         </div>
         <div style={{flex:2}}>
-          <h4>Approved timesheets (latest first)</h4>
-          <button onClick={loadTimesheets}>Refresh</button>
-          <button onClick={()=>clearTimesheet(null)} style={{marginLeft:8}}>Clear all timesheets</button>
-          {Object.keys(grouped).length === 0 ? <p>No approved timesheets</p> : Object.keys(grouped).map(staffId => (
+          <h4>Timesheets (Owner)</h4>
+          <div style={{marginBottom:8}}>
+            <button onClick={()=>{ setViewMode('approved'); loadTimesheets('approved') }}>Load approved</button>
+            <button onClick={()=>{ setViewMode('pending'); loadTimesheets('pending') }} style={{marginLeft:8}}>Load pending</button>
+            <button onClick={()=>clearTimesheet(null)} style={{marginLeft:8}}>Clear all timesheets</button>
+          </div>
+          {Object.keys(grouped).length === 0 ? <p>No timesheets</p> : Object.keys(grouped).map(staffId => (
             <div key={staffId} style={{marginTop:12}}>
-              <h5>Staff: {staffId} <button onClick={()=>{ /* no-op */ }}> </button></h5>
+              <h5>Staff: {userMap[staffId] ? userMap[staffId].name : staffId}</h5>
               <ul>
                 {grouped[staffId].map(t => (
-                  <li key={t.id}>{t.date} - {t.hours}h - {t.notes} <button onClick={()=>clearTimesheet(t.id)}>Delete</button></li>
+                  <li key={t.id}>{t.date} - {t.hours}h - {t.notes} - Client: {userMap[t.client_id] ? userMap[t.client_id].name : t.client_id} <button onClick={()=>clearTimesheet(t.id)}>Delete</button></li>
                 ))}
               </ul>
             </div>
@@ -254,7 +305,12 @@ export default function App() {
     <div className="app">
       {!user ? <Landing onLogin={onLogin} onSelectRole={r=>setSelectedRole(r)} selectedRole={selectedRole} /> : (
         <div>
-          <h2>Welcome {user.name} ({user.role})</h2>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+            <h2>Welcome {user.name} ({user.role})</h2>
+            <div>
+              <button onClick={()=>{ setUser(null); setToken(null); setSelectedRole(null); }}>Logout</button>
+            </div>
+          </div>
           {user.role === 'staff' && <StaffPage token={token} />}
           {user.role === 'client' && <ClientPage token={token} />}
           {user.role === 'owner' && <OwnerPage token={token} />}
