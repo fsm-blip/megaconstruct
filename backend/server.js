@@ -7,7 +7,7 @@ const jwt = require('jsonwebtoken');
 const nodemailer = require('nodemailer');
 const path = require('path');
 const { Pool } = require('pg');
-const { nanoid } = require('nanoid');
+// nanoid is an ES module; use crypto.randomUUID() instead for unique ids in CommonJS
 const Database = require('better-sqlite3');
 require('dotenv').config();
 
@@ -131,13 +131,13 @@ async function initDb() {
   } else {
     const ownerRes = await pool.query('SELECT id FROM users WHERE role=$1 LIMIT 1', ['owner']);
     if (ownerRes.rowCount === 0) {
-      const id = nanoid();
+      const id = crypto.randomUUID();
       await pool.query('INSERT INTO users(id,name,email,password,role) VALUES($1,$2,$3,$4,$5)', [id, 'Owner', ownerEmail, bcrypt.hashSync(ownerPw, 8), 'owner']);
       console.log('Seeded owner ->', { email: ownerEmail, password: ownerPw, id });
     }
     const clientRes = await pool.query('SELECT id FROM users WHERE role=$1 LIMIT 1', ['client']);
     if (clientRes.rowCount === 0) {
-      const id = nanoid();
+      const id = crypto.randomUUID();
       await pool.query('INSERT INTO users(id,name,email,password,role) VALUES($1,$2,$3,$4,$5)', [id, 'Client A', clientEmail, bcrypt.hashSync(clientPw, 8), 'client']);
       console.log('Seeded client ->', { email: clientEmail, password: clientPw, id });
     }
