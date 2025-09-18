@@ -52,6 +52,50 @@ function Login({ onLogin }) {
   )
 }
 
+function Header({ onSelectRole }) {
+  return (
+    <header className="site-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:16}}>
+      <div style={{fontWeight:'bold'}}>Mega Construct</div>
+      <nav className="top-links">
+        <a href="#" onClick={e=>{e.preventDefault(); onSelectRole('owner')}}>Owner</a>
+        <a href="#" style={{marginLeft:12}} onClick={e=>{e.preventDefault(); onSelectRole('client')}}>Client</a>
+        <a href="#" style={{marginLeft:12}} onClick={e=>{e.preventDefault(); onSelectRole('staff')}}>Staff</a>
+      </nav>
+    </header>
+  )
+}
+
+function Landing({ onLogin, onSelectRole, selectedRole }) {
+  return (
+    <div>
+      <Header onSelectRole={onSelectRole} />
+      <div style={{display:'flex',gap:16}}>
+        <div style={{flex:2}}>
+          <h1>Mega Construct Portal</h1>
+          <p>Welcome to Mega Construct. We provide high-quality temporary construction staff to clients across the UK. Use the portal to submit timesheets, approve work, and manage payments.</p>
+          <ul>
+            <li>Fast temporary staff onboarding</li>
+            <li>Client approvals via email</li>
+            <li>Owner notifications and payment tracking</li>
+          </ul>
+          <p className="cta">Get started by choosing your role from the top-right.</p>
+        </div>
+        <div style={{flex:1}}>
+          {selectedRole ? <div>
+            <h4>Login as {selectedRole}</h4>
+            <Login onLogin={onLogin} />
+          </div> : (
+            <div className="card">
+              <h4>Sign in</h4>
+              <p>Choose Owner / Client / Staff from the top-right to open the login form.</p>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function StaffPanel({ token }) {
   const [clientId, setClientId] = useState('')
   const [date, setDate] = useState('')
@@ -200,6 +244,7 @@ function OwnerPanel({ token }) {
 export default function App() {
   const [user, setUser] = useState(null)
   const [token, setToken] = useState(null)
+  const [selectedRole, setSelectedRole] = useState(null)
 
   function onLogin(data) {
     setUser(data.user); setToken(data.token)
@@ -207,7 +252,7 @@ export default function App() {
 
   return (
     <div className="app">
-      {!user ? <Login onLogin={onLogin} /> : (
+      {!user ? <Landing onLogin={onLogin} onSelectRole={r=>setSelectedRole(r)} selectedRole={selectedRole} /> : (
         <div>
           <h2>Welcome {user.name} ({user.role})</h2>
           {user.role === 'staff' && <StaffPage token={token} />}
