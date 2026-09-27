@@ -11,8 +11,14 @@ export default function OwnerPage({ token }) {
   const [role, setRole] = useState('staff')
   const [assignClient, setAssignClient] = useState('')
   const [viewMode, setViewMode] = useState('pending')
+  const [invoices, setInvoices] = useState([])
+  const [invoicePeriodType, setInvoicePeriodType] = useState('weekly')
+  const [invoiceClientId, setInvoiceClientId] = useState('')
+  const [invoiceStart, setInvoiceStart] = useState('')
+  const [invoiceEnd, setInvoiceEnd] = useState('')
+  const [invoiceRate, setInvoiceRate] = useState('')
 
-  useEffect(()=>{ if (token) { loadUsers(); loadClients(); loadTimes(); } }, [token])
+  useEffect(()=>{ if (token) { loadUsers(); loadClients(); loadTimes(); loadInvoices(); } }, [token])
 
   async function loadUsers() {
     try {
@@ -25,7 +31,10 @@ export default function OwnerPage({ token }) {
     try {
       const r = await axios.get(`${API}/api/clients`, { headers: { Authorization: `Bearer ${token}` } })
       setClients(r.data)
-      if (r.data[0]) setAssignClient(r.data[0].id)
+      if (r.data[0]) {
+        setAssignClient(r.data[0].id)
+        setInvoiceClientId(current => current || r.data[0].id)
+      }
     } catch (e) { console.error('loadClients', e) }
   }
 
@@ -47,6 +56,32 @@ export default function OwnerPage({ token }) {
       setName(''); setEmail(''); setPassword(''); setRole('staff')
       loadUsers(); loadClients()
     } catch (e) { console.error('createUser', e); alert('Create failed') }
+  }
+
+  async function loadInvoices() {
+    try {
+      const r = await axios.get(`${API}/api/invoices`, { headers: { Authorization: `Bearer ${token}` } })
+      setInvoices(r.data)
+    } catch (e) { console.error('loadInvoices', e); alert('Failed loading invoices') }
+  }
+
+  async function generateInvoice() {
+    if (!invoiceClientId || !invoiceStart || !invoiceEnd || !invoiceRate) return alert('Select client, period and hourly rate')
+    try {
+      const payload = {
+        clientId: invoiceClientId,
+        periodType: invoicePeriodType,
+        periodStart: invoiceStart,
+        periodEnd: invoiceEnd,
+        hourlyRate: Number(invoiceRate)
+      }
+      await axios.post(`${API}/api/invoices/generate`, payload, { headers: { Authorization: `Bearer ${token}` } })
+      alert('Draft invoice generated')
+      loadInvoices(); loadTimes(viewMode)
+    } catch (e) {
+      console.error('generateInvoice', e)
+      alert(e.response?.data?.error || 'Invoice generation failed')
+    }
   }
 
   async function deleteUser(id) {
@@ -123,6 +158,33 @@ export default function OwnerPage({ token }) {
               </ul>
             </div>
           ))}
+        </div>
+        <div style={{flex:1.3}}>
+          <h4>Invoices</h4>
+          <div style={{display:'grid', gap:8}}>
+            <select value={invoiceClientId} onChange={e=>setInvoiceClientId(e.target.value)}>
+              <option value="">Select client</option>
+              {clients.map(c=> <option key={c.id} value={c.id}>{c.name} ({c.email})</option>)}
+            </select>
+            <select value={invoicePeriodType} onChange={e=>setInvoicePeriodType(e.target.value)}>
+              <option value="weekly">Weekly</option>
+              <option value="monthly">Monthly</option>
+            </select>
+            <input type="date" value={invoiceStart} onChange={e=>setInvoiceStart(e.target.value)} />
+            <input type="date" value={invoiceEnd} onChange={e=>setInvoiceEnd(e.target.value)} />
+            <input placeholder="hourly rate" value={invoiceRate} onChange={e=>setInvoiceRate(e.target.value)} />
+            <button onClick={generateInvoice}>Generate draft invoice</button>
+            <button onClick={loadInvoices}>Refresh invoices</button>
+          </div>
+          {invoices.length === 0 ? <p>No invoices yet</p> : (
+            <ul>
+              {invoices.map(i => (
+                <li key={i.id}>
+                  {i.invoice_number} - {i.client_name || i.client_id} - {i.period_start} to {i.period_end} - {i.total_hours}h - £{Number(i.total_amount).toFixed(2)} - {i.status}
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       </div>
     </div>

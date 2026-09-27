@@ -1,0 +1,20 @@
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+frontend/client/dist/
+
+# Local databases and runtime files
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# OS/editor noise
+.DS_Store
+*.log

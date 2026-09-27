@@ -12,7 +12,10 @@ const Database = require('better-sqlite3');
 require('dotenv').config();
 
 const PORT = process.env.PORT || 3000;
-const JWT_SECRET = process.env.JWT_SECRET || 'secret';
+const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex');
+if (!process.env.JWT_SECRET) {
+  console.warn('JWT_SECRET is not set; using an ephemeral development secret for this process.');
+}
 
 let useSqlite = false;
 let pool = null;
@@ -64,10 +67,29 @@ async function initDb() {
         expires_at TEXT NOT NULL,
         used INTEGER DEFAULT 0
       );
+      CREATE TABLE IF NOT EXISTS invoices (
+        id TEXT PRIMARY KEY,
+        invoice_number TEXT UNIQUE NOT NULL,
+        client_id TEXT NOT NULL,
+        period_type TEXT NOT NULL,
+        period_start TEXT NOT NULL,
+        period_end TEXT NOT NULL,
+        total_hours REAL NOT NULL,
+        hourly_rate REAL NOT NULL,
+        total_amount REAL NOT NULL,
+        status TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        issued_at TEXT
+      );
     `);
     // add client_id column to users if missing
     try {
       sqliteDb.prepare("ALTER TABLE users ADD COLUMN client_id TEXT").run();
+    } catch (e) {
+      // ignore if column exists
+    }
+    try {
+      sqliteDb.prepare("ALTER TABLE timesheets ADD COLUMN invoice_id TEXT").run();
     } catch (e) {
       // ignore if column exists
     }
@@ -103,43 +125,62 @@ async function initDb() {
         used boolean DEFAULT false
       );
     `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS invoices (
+        id text PRIMARY KEY,
+        invoice_number text UNIQUE NOT NULL,
+        client_id text NOT NULL REFERENCES users(id),
+        period_type text NOT NULL,
+        period_start date NOT NULL,
+        period_end date NOT NULL,
+        total_hours numeric NOT NULL,
+        hourly_rate numeric NOT NULL,
+        total_amount numeric NOT NULL,
+        status text NOT NULL,
+        created_at timestamptz NOT NULL,
+        issued_at timestamptz
+      );
+    `);
     // ensure client_id column exists
     try {
       await pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS client_id text");
     } catch (e) { /* ignore */ }
+    try {
+      await pool.query("ALTER TABLE timesheets ADD COLUMN IF NOT EXISTS invoice_id text REFERENCES invoices(id)");
+    } catch (e) { /* ignore */ }
   }
 
   // seed owner and client if missing (owner credentials requested)
-  const ownerEmail = process.env.OWNER_EMAIL || 'tsvet.spasov';
-  const ownerPw = process.env.OWNER_PASSWORD || 'viki_2505';
+  const ownerEmail = process.env.OWNER_EMAIL || 'owner@example.com';
+  const ownerPw = process.env.OWNER_PASSWORD || crypto.randomBytes(18).toString('hex');
   const clientEmail = process.env.SEED_CLIENT_EMAIL || 'client@example.com';
-  const clientPw = process.env.SEED_CLIENT_PASSWORD || 'clientpass';
+  const clientPw = process.env.SEED_CLIENT_PASSWORD || crypto.randomBytes(18).toString('hex');
 
   if (useSqlite) {
     const row = sqliteDb.prepare('SELECT id FROM users WHERE role = ? LIMIT 1').get('owner');
     if (!row) {
   const id = crypto.randomUUID();
       sqliteDb.prepare('INSERT INTO users(id,name,email,password,role) VALUES(?,?,?,?,?)').run(id, 'Owner', ownerEmail, bcrypt.hashSync(ownerPw, 8), 'owner');
-      console.log('Seeded owner ->', { email: ownerEmail, password: ownerPw, id });
+      console.log('Seeded owner ->', { email: ownerEmail, id });
     }
     const crow = sqliteDb.prepare('SELECT id FROM users WHERE role = ? LIMIT 1').get('client');
     if (!crow) {
   const id = crypto.randomUUID();
       sqliteDb.prepare('INSERT INTO users(id,name,email,password,role) VALUES(?,?,?,?,?)').run(id, 'Client A', clientEmail, bcrypt.hashSync(clientPw, 8), 'client');
-      console.log('Seeded client ->', { email: clientEmail, password: clientPw, id });
+      console.log('Seeded client ->', { email: clientEmail, id });
     }
   } else {
     const ownerRes = await pool.query('SELECT id FROM users WHERE role=$1 LIMIT 1', ['owner']);
     if (ownerRes.rowCount === 0) {
       const id = crypto.randomUUID();
       await pool.query('INSERT INTO users(id,name,email,password,role) VALUES($1,$2,$3,$4,$5)', [id, 'Owner', ownerEmail, bcrypt.hashSync(ownerPw, 8), 'owner']);
-      console.log('Seeded owner ->', { email: ownerEmail, password: ownerPw, id });
+      console.log('Seeded owner ->', { email: ownerEmail, id });
     }
     const clientRes = await pool.query('SELECT id FROM users WHERE role=$1 LIMIT 1', ['client']);
     if (clientRes.rowCount === 0) {
       const id = crypto.randomUUID();
       await pool.query('INSERT INTO users(id,name,email,password,role) VALUES($1,$2,$3,$4,$5)', [id, 'Client A', clientEmail, bcrypt.hashSync(clientPw, 8), 'client']);
-      console.log('Seeded client ->', { email: clientEmail, password: clientPw, id });
+      console.log('Seeded client ->', { email: clientEmail, id });
     }
   }
 }
@@ -199,6 +240,22 @@ function generateToken(user) {
 
 function makeResetToken() {
   return crypto.randomBytes(24).toString('hex');
+}
+
+function normalizeDateOnly(value) {
+  if (!value) return null;
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString().slice(0, 10);
+}
+
+function invoiceNumber(periodType) {
+  const stamp = new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14);
+  return `MC-${periodType.toUpperCase().slice(0, 1)}-${stamp}-${crypto.randomBytes(2).toString('hex').toUpperCase()}`;
+}
+
+function toMoney(value) {
+  return Math.round((Number(value) || 0) * 100) / 100;
 }
 
 async function authMiddleware(req, res, next) {
@@ -688,6 +745,98 @@ app.get('/api/timesheets', authMiddleware, async (req, res) => {
     console.error(e);
     res.status(500).json({ error: 'Server error' });
   }
+});
+
+// Owner: create a draft invoice from approved, uninvoiced timesheets.
+app.post('/api/invoices/generate', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'owner') return res.status(403).json({ error: 'Forbidden' });
+  const periodType = req.body.periodType === 'monthly' ? 'monthly' : 'weekly';
+  const periodStart = normalizeDateOnly(req.body.periodStart);
+  const periodEnd = normalizeDateOnly(req.body.periodEnd);
+  const clientId = req.body.clientId || null;
+  const hourlyRate = Number(req.body.hourlyRate || process.env.DEFAULT_HOURLY_RATE || 0);
+  if (!periodStart || !periodEnd) return res.status(400).json({ error: 'Invalid periodStart or periodEnd' });
+  if (new Date(periodStart) > new Date(periodEnd)) return res.status(400).json({ error: 'periodStart must be before periodEnd' });
+  if (!hourlyRate || hourlyRate < 0) return res.status(400).json({ error: 'hourlyRate must be greater than zero' });
+
+  const id = crypto.randomUUID();
+  const createdAt = new Date().toISOString();
+  const number = invoiceNumber(periodType);
+  try {
+    if (useSqlite) {
+      const rows = clientId
+        ? sqliteDb.prepare("SELECT * FROM timesheets WHERE status = ? AND invoice_id IS NULL AND client_id = ? AND date BETWEEN ? AND ? ORDER BY date").all('approved', clientId, periodStart, periodEnd)
+        : sqliteDb.prepare("SELECT * FROM timesheets WHERE status = ? AND invoice_id IS NULL AND date BETWEEN ? AND ? ORDER BY client_id, date").all('approved', periodStart, periodEnd);
+      if (rows.length === 0) return res.status(400).json({ error: 'No approved uninvoiced timesheets found for this period' });
+      const invoiceClientId = clientId || rows[0].client_id;
+      if (!clientId && rows.some(r => r.client_id !== invoiceClientId)) return res.status(400).json({ error: 'Select a client when multiple clients have approved timesheets in the period' });
+      const totalHours = rows.reduce((sum, r) => sum + Number(r.hours || 0), 0);
+      const totalAmount = toMoney(totalHours * hourlyRate);
+      const tx = sqliteDb.transaction(() => {
+        sqliteDb.prepare('INSERT INTO invoices(id,invoice_number,client_id,period_type,period_start,period_end,total_hours,hourly_rate,total_amount,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)')
+          .run(id, number, invoiceClientId, periodType, periodStart, periodEnd, totalHours, hourlyRate, totalAmount, 'draft', createdAt);
+        const update = sqliteDb.prepare('UPDATE timesheets SET status = ?, invoice_id = ? WHERE id = ?');
+        rows.forEach(r => update.run('invoiced', id, r.id));
+      });
+      tx();
+      return res.json({ id, invoice_number: number, client_id: invoiceClientId, period_type: periodType, period_start: periodStart, period_end: periodEnd, total_hours: totalHours, hourly_rate: hourlyRate, total_amount: totalAmount, status: 'draft', created_at: createdAt, timesheets: rows });
+    }
+
+    await pool.query('BEGIN');
+    const params = ['approved', periodStart, periodEnd];
+    let where = "status=$1 AND invoice_id IS NULL AND date BETWEEN $2 AND $3";
+    if (clientId) { params.push(clientId); where += ` AND client_id=$${params.length}`; }
+    const ts = await pool.query(`SELECT * FROM timesheets WHERE ${where} ORDER BY client_id, date FOR UPDATE`, params);
+    if (ts.rowCount === 0) {
+      await pool.query('ROLLBACK');
+      return res.status(400).json({ error: 'No approved uninvoiced timesheets found for this period' });
+    }
+    const invoiceClientId = clientId || ts.rows[0].client_id;
+    if (!clientId && ts.rows.some(r => r.client_id !== invoiceClientId)) {
+      await pool.query('ROLLBACK');
+      return res.status(400).json({ error: 'Select a client when multiple clients have approved timesheets in the period' });
+    }
+    const totalHours = ts.rows.reduce((sum, r) => sum + Number(r.hours || 0), 0);
+    const totalAmount = toMoney(totalHours * hourlyRate);
+    await pool.query('INSERT INTO invoices(id,invoice_number,client_id,period_type,period_start,period_end,total_hours,hourly_rate,total_amount,status,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)', [id, number, invoiceClientId, periodType, periodStart, periodEnd, totalHours, hourlyRate, totalAmount, 'draft', createdAt]);
+    await pool.query('UPDATE timesheets SET status=$1, invoice_id=$2 WHERE id = ANY($3)', ['invoiced', id, ts.rows.map(r => r.id)]);
+    await pool.query('COMMIT');
+    res.json({ id, invoice_number: number, client_id: invoiceClientId, period_type: periodType, period_start: periodStart, period_end: periodEnd, total_hours: totalHours, hourly_rate: hourlyRate, total_amount: totalAmount, status: 'draft', created_at: createdAt, timesheets: ts.rows });
+  } catch (e) {
+    if (!useSqlite) { try { await pool.query('ROLLBACK'); } catch (_) {} }
+    console.error(e);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Owner: list invoices with client names.
+app.get('/api/invoices', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'owner') return res.status(403).json({ error: 'Forbidden' });
+  try {
+    if (useSqlite) {
+      const rows = sqliteDb.prepare(`SELECT i.*, u.name as client_name, u.email as client_email FROM invoices i LEFT JOIN users u ON u.id = i.client_id ORDER BY i.created_at DESC`).all();
+      return res.json(rows);
+    }
+    const r = await pool.query(`SELECT i.*, u.name as client_name, u.email as client_email FROM invoices i LEFT JOIN users u ON u.id = i.client_id ORDER BY i.created_at DESC`);
+    res.json(r.rows);
+  } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
+});
+
+// Owner: invoice detail including the timesheets locked to it.
+app.get('/api/invoices/:id', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'owner') return res.status(403).json({ error: 'Forbidden' });
+  try {
+    if (useSqlite) {
+      const invoice = sqliteDb.prepare('SELECT * FROM invoices WHERE id = ?').get(req.params.id);
+      if (!invoice) return res.status(404).json({ error: 'Invoice not found' });
+      const timesheets = sqliteDb.prepare('SELECT * FROM timesheets WHERE invoice_id = ? ORDER BY date').all(req.params.id);
+      return res.json({ ...invoice, timesheets });
+    }
+    const invoice = await pool.query('SELECT * FROM invoices WHERE id=$1', [req.params.id]);
+    if (invoice.rowCount === 0) return res.status(404).json({ error: 'Invoice not found' });
+    const timesheets = await pool.query('SELECT * FROM timesheets WHERE invoice_id=$1 ORDER BY date', [req.params.id]);
+    res.json({ ...invoice.rows[0], timesheets: timesheets.rows });
+  } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
 });
 
 app.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));
