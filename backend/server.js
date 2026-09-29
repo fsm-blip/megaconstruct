@@ -12,9 +12,20 @@ const Database = require('better-sqlite3');
 require('dotenv').config();
 
 const PORT = process.env.PORT || 3000;
+const NODE_ENV = process.env.NODE_ENV || 'development';
+const DATABASE_URL = (process.env.DATABASE_URL || '').trim();
 const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex');
+
+if (!process.env.JWT_SECRET && NODE_ENV === 'production') {
+  console.error('JWT_SECRET is required in production. Refusing to start.');
+  process.exit(1);
+}
 if (!process.env.JWT_SECRET) {
-  console.warn('JWT_SECRET is not set; using an ephemeral development secret for this process.');
+  console.warn('JWT_SECRET is not set; using an ephemeral development secret for this process. Set JWT_SECRET in backend/.env for stable local sessions.');
+}
+if (!DATABASE_URL && NODE_ENV === 'production') {
+  console.error('DATABASE_URL is required in production. Refusing to start.');
+  process.exit(1);
 }
 
 let useSqlite = false;
@@ -22,19 +33,21 @@ let pool = null;
 let sqliteDb = null;
 
 async function initDb() {
-  // Try Postgres first if DATABASE_URL is set, otherwise try default Postgres connection
-  const tryConn = process.env.DATABASE_URL || 'postgres://postgres:pass@localhost:5432/megaconstruct';
-  try {
-    // When running in production (Vercel/Supabase) we need to enable TLS/SSL.
-    const poolConfig = { connectionString: tryConn };
-    if (process.env.NODE_ENV === 'production') {
-      poolConfig.ssl = { rejectUnauthorized: false };
+  if (DATABASE_URL) {
+    try {
+      const poolConfig = { connectionString: DATABASE_URL };
+      if (NODE_ENV === 'production' || /supabase\.co/i.test(DATABASE_URL)) {
+        poolConfig.ssl = { rejectUnauthorized: false };
+      }
+      pool = new Pool(poolConfig);
+      await pool.query('SELECT 1');
+      console.log('Connected to Postgres via DATABASE_URL');
+    } catch (e) {
+      console.warn('Postgres connection failed, falling back to SQLite:', e.message);
+      useSqlite = true;
     }
-    pool = new Pool(poolConfig);
-    await pool.query('SELECT 1');
-    console.log('Connected to Postgres');
-  } catch (e) {
-    console.warn('Postgres not available or connection failed, falling back to SQLite:', e.message);
+  } else {
+    console.log('DATABASE_URL is not set; using local SQLite fallback.');
     useSqlite = true;
   }
 

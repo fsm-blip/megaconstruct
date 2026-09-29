@@ -15,6 +15,10 @@ frontend/client/dist/
 *.sqlite-shm
 *.sqlite-wal
 
+# Local access/key-like files
+remote_repos_access
+remote_repos_access.pub
+
 # OS/editor noise
 .DS_Store
 *.log
