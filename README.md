@@ -92,3 +92,29 @@ Do not commit:
 - key-like access files
 
 These are ignored by `.gitignore`; if accidentally tracked, untrack them with `git rm --cached` rather than deleting local working copies.
+
+## Timesheet domain model
+
+Phase 2 keeps the existing UI/API workflow compatible while adding a stronger timesheet foundation for approval and invoicing.
+
+Core tables:
+
+- `timesheets` — parent submission record with staff, client, status, period, approval and invoice lock fields.
+- `timesheet_entries` — one or more worked-day/line entries for a timesheet.
+- `timesheet_events` — audit trail for create, submit, approve, reassign, archive and invoice-lock events.
+
+Current compatibility:
+
+- Existing staff submit, client approve, owner view, and invoice-generation endpoints still work.
+- Existing one-row timesheets are backfilled into `timesheet_entries` at startup in an idempotent way.
+- Old summary columns such as `date`, `hours`, and `notes` remain for current screens and invoice compatibility.
+- Approved or invoiced rows remain protected by status; richer draft/entry endpoints only allow staff edits while a timesheet is `draft` or `returned`.
+
+New additive endpoints for future UI work:
+
+- `POST /api/timesheets/draft`
+- `POST /api/timesheets/:id/entries`
+- `POST /api/timesheets/:id/submit`
+- `GET /api/timesheets/:id`
+
+Do not drop legacy timesheet columns until the React UI and invoice flow have fully moved to the entry-based model.

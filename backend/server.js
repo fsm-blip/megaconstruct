@@ -8,7 +8,7 @@ const nodemailer = require('nodemailer');
 const path = require('path');
 const { Pool } = require('pg');
 // nanoid is an ES module; use crypto.randomUUID() instead for unique ids in CommonJS
-const Database = require('better-sqlite3');
+let Database = null;
 require('dotenv').config();
 
 const PORT = process.env.PORT || 3000;
@@ -52,6 +52,7 @@ async function initDb() {
   }
 
   if (useSqlite) {
+    if (!Database) Database = require('better-sqlite3');
     sqliteDb = new Database(path.join(__dirname, 'megaconstruct.sqlite'));
     sqliteDb.pragma('journal_mode = WAL');
     sqliteDb.exec(`
@@ -71,7 +72,38 @@ async function initDb() {
         notes TEXT,
         status TEXT,
         created_at TEXT,
-        approved_at TEXT
+        approved_at TEXT,
+        period_start TEXT,
+        period_end TEXT,
+        submitted_at TEXT,
+        returned_at TEXT,
+        invoiced_at TEXT,
+        updated_at TEXT
+      );
+      CREATE TABLE IF NOT EXISTS timesheet_entries (
+        id TEXT PRIMARY KEY,
+        timesheet_id TEXT NOT NULL,
+        work_date TEXT NOT NULL,
+        hours REAL NOT NULL,
+        break_minutes INTEGER DEFAULT 0,
+        start_time TEXT,
+        end_time TEXT,
+        site_name TEXT,
+        job_role TEXT,
+        notes TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(timesheet_id, work_date, notes)
+      );
+      CREATE TABLE IF NOT EXISTS timesheet_events (
+        id TEXT PRIMARY KEY,
+        timesheet_id TEXT NOT NULL,
+        actor_id TEXT,
+        event_type TEXT NOT NULL,
+        from_status TEXT,
+        to_status TEXT,
+        comment TEXT,
+        created_at TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS password_resets (
         id TEXT PRIMARY KEY,
@@ -101,11 +133,30 @@ async function initDb() {
     } catch (e) {
       // ignore if column exists
     }
-    try {
-      sqliteDb.prepare("ALTER TABLE timesheets ADD COLUMN invoice_id TEXT").run();
-    } catch (e) {
-      // ignore if column exists
-    }
+    const sqliteTimesheetColumns = [
+      ['invoice_id', 'TEXT'],
+      ['period_start', 'TEXT'],
+      ['period_end', 'TEXT'],
+      ['submitted_at', 'TEXT'],
+      ['returned_at', 'TEXT'],
+      ['invoiced_at', 'TEXT'],
+      ['updated_at', 'TEXT']
+    ];
+    sqliteTimesheetColumns.forEach(([column, type]) => {
+      try {
+        sqliteDb.prepare(`ALTER TABLE timesheets ADD COLUMN ${column} ${type}`).run();
+      } catch (e) {
+        // ignore if column exists
+      }
+    });
+    sqliteDb.exec(`
+      CREATE INDEX IF NOT EXISTS idx_timesheets_staff_status ON timesheets(staff_id, status);
+      CREATE INDEX IF NOT EXISTS idx_timesheets_client_status ON timesheets(client_id, status);
+      CREATE INDEX IF NOT EXISTS idx_timesheets_period ON timesheets(period_start, period_end);
+      CREATE INDEX IF NOT EXISTS idx_timesheets_invoice ON timesheets(invoice_id);
+      CREATE INDEX IF NOT EXISTS idx_timesheet_entries_parent ON timesheet_entries(timesheet_id);
+      CREATE INDEX IF NOT EXISTS idx_timesheet_events_parent ON timesheet_events(timesheet_id, created_at);
+    `);
   } else {
     await pool.query(`
       CREATE TABLE IF NOT EXISTS users (
@@ -126,7 +177,42 @@ async function initDb() {
         notes text,
         status text,
         created_at timestamptz,
-        approved_at timestamptz
+        approved_at timestamptz,
+        period_start date,
+        period_end date,
+        submitted_at timestamptz,
+        returned_at timestamptz,
+        invoiced_at timestamptz,
+        updated_at timestamptz
+      );
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS timesheet_entries (
+        id text PRIMARY KEY,
+        timesheet_id text NOT NULL REFERENCES timesheets(id) ON DELETE CASCADE,
+        work_date date NOT NULL,
+        hours numeric NOT NULL,
+        break_minutes integer DEFAULT 0,
+        start_time text,
+        end_time text,
+        site_name text,
+        job_role text,
+        notes text,
+        created_at timestamptz NOT NULL,
+        updated_at timestamptz NOT NULL,
+        UNIQUE(timesheet_id, work_date, notes)
+      );
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS timesheet_events (
+        id text PRIMARY KEY,
+        timesheet_id text NOT NULL REFERENCES timesheets(id) ON DELETE CASCADE,
+        actor_id text REFERENCES users(id),
+        event_type text NOT NULL,
+        from_status text,
+        to_status text,
+        comment text,
+        created_at timestamptz NOT NULL
       );
     `);
     await pool.query(`
@@ -160,8 +246,22 @@ async function initDb() {
     } catch (e) { /* ignore */ }
     try {
       await pool.query("ALTER TABLE timesheets ADD COLUMN IF NOT EXISTS invoice_id text REFERENCES invoices(id)");
+      await pool.query("ALTER TABLE timesheets ADD COLUMN IF NOT EXISTS period_start date");
+      await pool.query("ALTER TABLE timesheets ADD COLUMN IF NOT EXISTS period_end date");
+      await pool.query("ALTER TABLE timesheets ADD COLUMN IF NOT EXISTS submitted_at timestamptz");
+      await pool.query("ALTER TABLE timesheets ADD COLUMN IF NOT EXISTS returned_at timestamptz");
+      await pool.query("ALTER TABLE timesheets ADD COLUMN IF NOT EXISTS invoiced_at timestamptz");
+      await pool.query("ALTER TABLE timesheets ADD COLUMN IF NOT EXISTS updated_at timestamptz");
+      await pool.query("CREATE INDEX IF NOT EXISTS idx_timesheets_staff_status ON timesheets(staff_id, status)");
+      await pool.query("CREATE INDEX IF NOT EXISTS idx_timesheets_client_status ON timesheets(client_id, status)");
+      await pool.query("CREATE INDEX IF NOT EXISTS idx_timesheets_period ON timesheets(period_start, period_end)");
+      await pool.query("CREATE INDEX IF NOT EXISTS idx_timesheets_invoice ON timesheets(invoice_id)");
+      await pool.query("CREATE INDEX IF NOT EXISTS idx_timesheet_entries_parent ON timesheet_entries(timesheet_id)");
+      await pool.query("CREATE INDEX IF NOT EXISTS idx_timesheet_events_parent ON timesheet_events(timesheet_id, created_at)");
     } catch (e) { /* ignore */ }
   }
+
+  await backfillTimesheetDomain();
 
   // seed owner and client if missing (owner credentials requested)
   const ownerEmail = process.env.OWNER_EMAIL || 'owner@example.com';
@@ -197,8 +297,6 @@ async function initDb() {
     }
   }
 }
-
-initDb().catch(err => { console.error('DB init error', err); process.exit(1); });
 
 const app = express();
 app.use(cors());
@@ -271,6 +369,98 @@ function toMoney(value) {
   return Math.round((Number(value) || 0) * 100) / 100;
 }
 
+function timesheetPeriodForDate(value) {
+  const date = normalizeDateOnly(value);
+  return { periodStart: date, periodEnd: date };
+}
+
+function serializeTimesheet(row, entries = []) {
+  if (!row) return row;
+  return {
+    ...row,
+    staffId: row.staff_id,
+    clientId: row.client_id,
+    periodStart: normalizeDateOnly(row.period_start || row.date),
+    periodEnd: normalizeDateOnly(row.period_end || row.date),
+    submittedAt: row.submitted_at || row.created_at || null,
+    approvedAt: row.approved_at || null,
+    returnedAt: row.returned_at || null,
+    invoicedAt: row.invoiced_at || null,
+    updatedAt: row.updated_at || row.created_at || null,
+    entries
+  };
+}
+
+async function logTimesheetEvent(timesheetId, actorId, eventType, fromStatus, toStatus, comment = '') {
+  const id = crypto.randomUUID();
+  const createdAt = new Date().toISOString();
+  if (useSqlite) {
+    sqliteDb.prepare('INSERT INTO timesheet_events(id,timesheet_id,actor_id,event_type,from_status,to_status,comment,created_at) VALUES(?,?,?,?,?,?,?,?)')
+      .run(id, timesheetId, actorId || null, eventType, fromStatus || null, toStatus || null, comment || '', createdAt);
+    return;
+  }
+  await pool.query('INSERT INTO timesheet_events(id,timesheet_id,actor_id,event_type,from_status,to_status,comment,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',
+    [id, timesheetId, actorId || null, eventType, fromStatus || null, toStatus || null, comment || '', createdAt]);
+}
+
+async function createTimesheetEntry(timesheetId, workDate, hours, notes = '', extras = {}) {
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  const breakMinutes = Number(extras.breakMinutes || extras.break_minutes || 0);
+  if (useSqlite) {
+    sqliteDb.prepare('INSERT INTO timesheet_entries(id,timesheet_id,work_date,hours,break_minutes,start_time,end_time,site_name,job_role,notes,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)')
+      .run(id, timesheetId, workDate, Number(hours), breakMinutes, extras.startTime || extras.start_time || null, extras.endTime || extras.end_time || null, extras.siteName || extras.site_name || null, extras.jobRole || extras.job_role || null, notes || '', now, now);
+    return id;
+  }
+  await pool.query('INSERT INTO timesheet_entries(id,timesheet_id,work_date,hours,break_minutes,start_time,end_time,site_name,job_role,notes,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)',
+    [id, timesheetId, workDate, Number(hours), breakMinutes, extras.startTime || extras.start_time || null, extras.endTime || extras.end_time || null, extras.siteName || extras.site_name || null, extras.jobRole || extras.job_role || null, notes || '', now, now]);
+  return id;
+}
+
+async function backfillTimesheetDomain() {
+  const now = new Date().toISOString();
+  if (useSqlite) {
+    sqliteDb.prepare(`
+      UPDATE timesheets
+      SET period_start = COALESCE(period_start, date),
+          period_end = COALESCE(period_end, date),
+          submitted_at = COALESCE(submitted_at, created_at),
+          updated_at = COALESCE(updated_at, created_at, ?),
+          invoiced_at = CASE WHEN status = 'invoiced' THEN COALESCE(invoiced_at, approved_at, created_at, ?) ELSE invoiced_at END
+    `).run(now, now);
+    const rows = sqliteDb.prepare(`
+      SELECT t.* FROM timesheets t
+      LEFT JOIN timesheet_entries e ON e.timesheet_id = t.id
+      WHERE e.id IS NULL AND t.date IS NOT NULL
+    `).all();
+    const insert = sqliteDb.prepare('INSERT INTO timesheet_entries(id,timesheet_id,work_date,hours,break_minutes,notes,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)');
+    const event = sqliteDb.prepare('INSERT INTO timesheet_events(id,timesheet_id,actor_id,event_type,from_status,to_status,comment,created_at) VALUES(?,?,?,?,?,?,?,?)');
+    const tx = sqliteDb.transaction(() => {
+      rows.forEach(r => {
+        insert.run(crypto.randomUUID(), r.id, normalizeDateOnly(r.date), Number(r.hours || 0), 0, r.notes || '', r.created_at || now, r.updated_at || r.created_at || now);
+        event.run(crypto.randomUUID(), r.id, null, 'backfilled', null, r.status || null, 'Created Phase 2 timesheet entry from legacy timesheet row.', now);
+      });
+    });
+    tx();
+    return;
+  }
+  await pool.query(`
+    UPDATE timesheets
+    SET period_start = COALESCE(period_start, date),
+        period_end = COALESCE(period_end, date),
+        submitted_at = COALESCE(submitted_at, created_at),
+        updated_at = COALESCE(updated_at, created_at, $1::timestamptz),
+        invoiced_at = CASE WHEN status = 'invoiced' THEN COALESCE(invoiced_at, approved_at, created_at, $1::timestamptz) ELSE invoiced_at END
+  `, [now]);
+  await pool.query(`
+    INSERT INTO timesheet_entries(id,timesheet_id,work_date,hours,break_minutes,notes,created_at,updated_at)
+    SELECT md5(random()::text || clock_timestamp()::text), t.id, t.date, COALESCE(t.hours, 0), 0, COALESCE(t.notes, ''), COALESCE(t.created_at, $1::timestamptz), COALESCE(t.updated_at, t.created_at, $1::timestamptz)
+    FROM timesheets t
+    WHERE t.date IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM timesheet_entries e WHERE e.timesheet_id = t.id)
+  `, [now]);
+}
+
 async function authMiddleware(req, res, next) {
   const auth = req.headers.authorization;
   if (!auth) return res.status(401).json({ error: 'Missing auth' });
@@ -321,22 +511,40 @@ app.post('/api/login', async (req, res) => {
 app.post('/api/timesheets', authMiddleware, async (req, res) => {
   if (req.user.role !== 'staff') return res.status(403).json({ error: 'Forbidden' });
   const { date, hours, clientId, notes } = req.body;
-  if (!date || !hours || !clientId) return res.status(400).json({ error: 'Missing fields' });
+  const workDate = normalizeDateOnly(date);
+  const numericHours = Number(hours);
+  if (!workDate || !numericHours || numericHours <= 0 || !clientId) return res.status(400).json({ error: 'Missing or invalid fields' });
   const id = crypto.randomUUID();
   const createdAt = new Date().toISOString();
+  const { periodStart, periodEnd } = timesheetPeriodForDate(workDate);
   try {
     if (useSqlite) {
-      sqliteDb.prepare('INSERT INTO timesheets(id,staff_id,client_id,date,hours,notes,status,created_at) VALUES(?,?,?,?,?,?,?,?)').run(id, req.user.id, clientId, date, hours, notes || '', 'submitted', createdAt);
+      const tx = sqliteDb.transaction(() => {
+        sqliteDb.prepare('INSERT INTO timesheets(id,staff_id,client_id,date,hours,notes,status,created_at,period_start,period_end,submitted_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)')
+          .run(id, req.user.id, clientId, workDate, numericHours, notes || '', 'submitted', createdAt, periodStart, periodEnd, createdAt, createdAt);
+        sqliteDb.prepare('INSERT INTO timesheet_entries(id,timesheet_id,work_date,hours,break_minutes,notes,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)')
+          .run(crypto.randomUUID(), id, workDate, numericHours, 0, notes || '', createdAt, createdAt);
+        sqliteDb.prepare('INSERT INTO timesheet_events(id,timesheet_id,actor_id,event_type,from_status,to_status,comment,created_at) VALUES(?,?,?,?,?,?,?,?)')
+          .run(crypto.randomUUID(), id, req.user.id, 'submitted', null, 'submitted', 'Staff submitted timesheet.', createdAt);
+      });
+      tx();
       const clientRow = sqliteDb.prepare('SELECT email FROM users WHERE id = ? AND role = ?').get(clientId, 'client');
-  if (clientRow && clientRow.email) sendEmail(clientRow.email, 'Timesheet submitted for your approval', `A timesheet (${id}) has been submitted.`).catch(e=>console.error(e));
-      res.json({ id, staffId: req.user.id, date, hours, clientId, notes, status: 'submitted', createdAt });
-    } else {
-      await pool.query('INSERT INTO timesheets(id,staff_id,client_id,date,hours,notes,status,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8)', [id, req.user.id, clientId, date, hours, notes || '', 'submitted', createdAt]);
-      const clientRes = await pool.query('SELECT email FROM users WHERE id=$1 AND role=$2', [clientId, 'client']);
-  if (clientRes.rowCount > 0 && clientRes.rows[0].email) sendEmail(clientRes.rows[0].email, 'Timesheet submitted for your approval', `A timesheet (${id}) has been submitted.`).catch(e=>console.error(e));
-      res.json({ id, staffId: req.user.id, date, hours, clientId, notes, status: 'submitted', createdAt });
+      if (clientRow && clientRow.email) sendEmail(clientRow.email, 'Timesheet submitted for your approval', `A timesheet (${id}) has been submitted.`).catch(e=>console.error(e));
+      return res.json(serializeTimesheet({ id, staff_id: req.user.id, client_id: clientId, date: workDate, hours: numericHours, notes: notes || '', status: 'submitted', created_at: createdAt, period_start: periodStart, period_end: periodEnd, submitted_at: createdAt, updated_at: createdAt }));
     }
+    await pool.query('BEGIN');
+    await pool.query('INSERT INTO timesheets(id,staff_id,client_id,date,hours,notes,status,created_at,period_start,period_end,submitted_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)',
+      [id, req.user.id, clientId, workDate, numericHours, notes || '', 'submitted', createdAt, periodStart, periodEnd, createdAt, createdAt]);
+    await pool.query('INSERT INTO timesheet_entries(id,timesheet_id,work_date,hours,break_minutes,notes,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',
+      [crypto.randomUUID(), id, workDate, numericHours, 0, notes || '', createdAt, createdAt]);
+    await pool.query('INSERT INTO timesheet_events(id,timesheet_id,actor_id,event_type,from_status,to_status,comment,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',
+      [crypto.randomUUID(), id, req.user.id, 'submitted', null, 'submitted', 'Staff submitted timesheet.', createdAt]);
+    await pool.query('COMMIT');
+    const clientRes = await pool.query('SELECT email FROM users WHERE id=$1 AND role=$2', [clientId, 'client']);
+    if (clientRes.rowCount > 0 && clientRes.rows[0].email) sendEmail(clientRes.rows[0].email, 'Timesheet submitted for your approval', `A timesheet (${id}) has been submitted.`).catch(e=>console.error(e));
+    res.json(serializeTimesheet({ id, staff_id: req.user.id, client_id: clientId, date: workDate, hours: numericHours, notes: notes || '', status: 'submitted', created_at: createdAt, period_start: periodStart, period_end: periodEnd, submitted_at: createdAt, updated_at: createdAt }));
   } catch (e) {
+    if (!useSqlite) { try { await pool.query('ROLLBACK'); } catch (_) {} }
     console.error(e);
     res.status(500).json({ error: 'Server error' });
   }
@@ -463,8 +671,14 @@ app.delete('/api/timesheets/:id', authMiddleware, async (req, res) => {
   const id = req.params.id;
   try {
     if (useSqlite) {
+      const ts = sqliteDb.prepare('SELECT * FROM timesheets WHERE id = ?').get(id);
+      sqliteDb.prepare('DELETE FROM timesheet_entries WHERE timesheet_id = ?').run(id);
+      await logTimesheetEvent(id, req.user.id, 'deleted', ts && ts.status, null, 'Owner deleted timesheet.');
+      sqliteDb.prepare('DELETE FROM timesheet_events WHERE timesheet_id = ?').run(id);
       sqliteDb.prepare('DELETE FROM timesheets WHERE id = ?').run(id);
     } else {
+      const tsr = await pool.query('SELECT * FROM timesheets WHERE id=$1', [id]);
+      if (tsr.rowCount > 0) await logTimesheetEvent(id, req.user.id, 'deleted', tsr.rows[0].status, null, 'Owner deleted timesheet.');
       await pool.query('DELETE FROM timesheets WHERE id=$1', [id]);
     }
     res.json({ ok: true });
@@ -478,7 +692,13 @@ app.delete('/api/timesheets/:id', authMiddleware, async (req, res) => {
 app.delete('/api/timesheets', authMiddleware, async (req, res) => {
   if (req.user.role !== 'owner') return res.status(403).json({ error: 'Forbidden' });
   try {
-    if (useSqlite) sqliteDb.prepare('DELETE FROM timesheets').run(); else await pool.query('DELETE FROM timesheets');
+    if (useSqlite) {
+      sqliteDb.prepare('DELETE FROM timesheet_entries').run();
+      sqliteDb.prepare('DELETE FROM timesheet_events').run();
+      sqliteDb.prepare('DELETE FROM timesheets').run();
+    } else {
+      await pool.query('DELETE FROM timesheets');
+    }
     res.json({ ok: true });
   } catch (e) {
     console.error(e);
@@ -663,6 +883,86 @@ app.get('/api/staffs', authMiddleware, async (req, res) => {
   } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
 });
 
+// Staff: create a draft timesheet header for richer Phase 2 flows.
+app.post('/api/timesheets/draft', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'staff') return res.status(403).json({ error: 'Forbidden' });
+  const { clientId, periodStart, periodEnd, notes } = req.body;
+  const start = normalizeDateOnly(periodStart);
+  const end = normalizeDateOnly(periodEnd || periodStart);
+  if (!clientId || !start || !end) return res.status(400).json({ error: 'Missing or invalid fields' });
+  if (new Date(start) > new Date(end)) return res.status(400).json({ error: 'periodStart must be before periodEnd' });
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  try {
+    if (useSqlite) {
+      sqliteDb.prepare('INSERT INTO timesheets(id,staff_id,client_id,date,hours,notes,status,created_at,period_start,period_end,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)')
+        .run(id, req.user.id, clientId, start, 0, notes || '', 'draft', now, start, end, now);
+      await logTimesheetEvent(id, req.user.id, 'created', null, 'draft', 'Staff created draft timesheet.');
+      return res.json(serializeTimesheet({ id, staff_id: req.user.id, client_id: clientId, date: start, hours: 0, notes: notes || '', status: 'draft', created_at: now, period_start: start, period_end: end, updated_at: now }));
+    }
+    await pool.query('INSERT INTO timesheets(id,staff_id,client_id,date,hours,notes,status,created_at,period_start,period_end,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)',
+      [id, req.user.id, clientId, start, 0, notes || '', 'draft', now, start, end, now]);
+    await logTimesheetEvent(id, req.user.id, 'created', null, 'draft', 'Staff created draft timesheet.');
+    res.json(serializeTimesheet({ id, staff_id: req.user.id, client_id: clientId, date: start, hours: 0, notes: notes || '', status: 'draft', created_at: now, period_start: start, period_end: end, updated_at: now }));
+  } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
+});
+
+// Staff: add a line entry to a draft or returned timesheet. Existing UI does not depend on this yet.
+app.post('/api/timesheets/:id/entries', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'staff') return res.status(403).json({ error: 'Forbidden' });
+  const id = req.params.id;
+  const workDate = normalizeDateOnly(req.body.workDate || req.body.date);
+  const hours = Number(req.body.hours);
+  if (!workDate || !hours || hours <= 0) return res.status(400).json({ error: 'Missing or invalid fields' });
+  try {
+    let ts;
+    if (useSqlite) ts = sqliteDb.prepare('SELECT * FROM timesheets WHERE id = ? AND staff_id = ?').get(id, req.user.id);
+    else {
+      const r = await pool.query('SELECT * FROM timesheets WHERE id=$1 AND staff_id=$2', [id, req.user.id]);
+      ts = r.rowCount ? r.rows[0] : null;
+    }
+    if (!ts) return res.status(404).json({ error: 'Timesheet not found' });
+    if (!['draft', 'returned'].includes(ts.status)) return res.status(400).json({ error: 'Only draft or returned timesheets can be edited' });
+    const entryId = await createTimesheetEntry(id, workDate, hours, req.body.notes || '', req.body);
+    const now = new Date().toISOString();
+    const newHours = Number(ts.hours || 0) + hours;
+    if (useSqlite) {
+      sqliteDb.prepare('UPDATE timesheets SET hours = ?, updated_at = ?, date = COALESCE(date, ?), period_start = MIN(COALESCE(period_start, ?), ?), period_end = MAX(COALESCE(period_end, ?), ?) WHERE id = ?')
+        .run(newHours, now, workDate, workDate, workDate, workDate, workDate, id);
+    } else {
+      await pool.query('UPDATE timesheets SET hours=$1, updated_at=$2, date=COALESCE(date, $3), period_start=LEAST(COALESCE(period_start, $3), $3), period_end=GREATEST(COALESCE(period_end, $3), $3) WHERE id=$4', [newHours, now, workDate, id]);
+    }
+    await logTimesheetEvent(id, req.user.id, 'entry_added', ts.status, ts.status, `Staff added entry ${entryId}.`);
+    res.json({ ok: true, entryId });
+  } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
+});
+
+// Staff: submit a draft or returned timesheet.
+app.post('/api/timesheets/:id/submit', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'staff') return res.status(403).json({ error: 'Forbidden' });
+  const id = req.params.id;
+  const now = new Date().toISOString();
+  try {
+    let ts;
+    let entryCount = 0;
+    if (useSqlite) {
+      ts = sqliteDb.prepare('SELECT * FROM timesheets WHERE id = ? AND staff_id = ?').get(id, req.user.id);
+      entryCount = sqliteDb.prepare('SELECT COUNT(*) as count FROM timesheet_entries WHERE timesheet_id = ?').get(id).count;
+    } else {
+      const r = await pool.query('SELECT * FROM timesheets WHERE id=$1 AND staff_id=$2', [id, req.user.id]);
+      ts = r.rowCount ? r.rows[0] : null;
+      entryCount = Number((await pool.query('SELECT COUNT(*) as count FROM timesheet_entries WHERE timesheet_id=$1', [id])).rows[0].count);
+    }
+    if (!ts) return res.status(404).json({ error: 'Timesheet not found' });
+    if (!['draft', 'returned'].includes(ts.status)) return res.status(400).json({ error: 'Only draft or returned timesheets can be submitted' });
+    if (!entryCount) return res.status(400).json({ error: 'Add at least one entry before submitting' });
+    if (useSqlite) sqliteDb.prepare('UPDATE timesheets SET status = ?, submitted_at = ?, returned_at = NULL, updated_at = ? WHERE id = ?').run('submitted', now, now, id);
+    else await pool.query('UPDATE timesheets SET status=$1, submitted_at=$2, returned_at=NULL, updated_at=$2 WHERE id=$3', ['submitted', now, id]);
+    await logTimesheetEvent(id, req.user.id, 'submitted', ts.status, 'submitted', 'Staff submitted timesheet.');
+    res.json({ ok: true, status: 'submitted' });
+  } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
+});
+
 // Reassign a timesheet to another staff (owner only)
 app.post('/api/timesheets/:id/reassign', authMiddleware, async (req, res) => {
   if (req.user.role !== 'owner') return res.status(403).json({ error: 'Forbidden' });
@@ -673,13 +973,15 @@ app.post('/api/timesheets/:id/reassign', authMiddleware, async (req, res) => {
     if (useSqlite) {
       const ts = sqliteDb.prepare('SELECT * FROM timesheets WHERE id = ?').get(id);
       if (!ts) return res.status(404).json({ error: 'Timesheet not found' });
-      sqliteDb.prepare('UPDATE timesheets SET staff_id = ? WHERE id = ?').run(toStaffId, id);
+      sqliteDb.prepare('UPDATE timesheets SET staff_id = ?, updated_at = ? WHERE id = ?').run(toStaffId, new Date().toISOString(), id);
+      await logTimesheetEvent(id, req.user.id, 'reassigned', ts.status, ts.status, `Owner reassigned staff from ${ts.staff_id} to ${toStaffId}.`);
       const updated = sqliteDb.prepare('SELECT * FROM timesheets WHERE id = ?').get(id);
       return res.json(updated);
     }
     const tsr = await pool.query('SELECT * FROM timesheets WHERE id=$1', [id]);
     if (tsr.rowCount === 0) return res.status(404).json({ error: 'Timesheet not found' });
-    await pool.query('UPDATE timesheets SET staff_id=$1 WHERE id=$2', [toStaffId, id]);
+    await pool.query('UPDATE timesheets SET staff_id=$1, updated_at=$2 WHERE id=$3', [toStaffId, new Date().toISOString(), id]);
+    await logTimesheetEvent(id, req.user.id, 'reassigned', tsr.rows[0].status, tsr.rows[0].status, `Owner reassigned staff from ${tsr.rows[0].staff_id} to ${toStaffId}.`);
     const updated = await pool.query('SELECT * FROM timesheets WHERE id=$1', [id]);
     res.json(updated.rows[0]);
   } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
@@ -693,13 +995,15 @@ app.post('/api/timesheets/:id/archive', authMiddleware, async (req, res) => {
     if (useSqlite) {
       const ts = sqliteDb.prepare('SELECT * FROM timesheets WHERE id = ?').get(id);
       if (!ts) return res.status(404).json({ error: 'Timesheet not found' });
-      sqliteDb.prepare('UPDATE timesheets SET status = ? WHERE id = ?').run('archived', id);
+      sqliteDb.prepare('UPDATE timesheets SET status = ?, updated_at = ? WHERE id = ?').run('archived', new Date().toISOString(), id);
+      await logTimesheetEvent(id, req.user.id, 'archived', ts.status, 'archived', 'Owner archived timesheet.');
       const updated = sqliteDb.prepare('SELECT * FROM timesheets WHERE id = ?').get(id);
       return res.json(updated);
     }
     const tsr = await pool.query('SELECT * FROM timesheets WHERE id=$1', [id]);
     if (tsr.rowCount === 0) return res.status(404).json({ error: 'Timesheet not found' });
-    await pool.query('UPDATE timesheets SET status=$1 WHERE id=$2', ['archived', id]);
+    await pool.query('UPDATE timesheets SET status=$1, updated_at=$2 WHERE id=$3', ['archived', new Date().toISOString(), id]);
+    await logTimesheetEvent(id, req.user.id, 'archived', tsr.rows[0].status, 'archived', 'Owner archived timesheet.');
     const updated = await pool.query('SELECT * FROM timesheets WHERE id=$1', [id]);
     res.json(updated.rows[0]);
   } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
@@ -713,7 +1017,8 @@ app.post('/api/timesheets/:id/approve', authMiddleware, async (req, res) => {
       const ts = sqliteDb.prepare('SELECT * FROM timesheets WHERE id = ? AND client_id = ?').get(id, req.user.id);
       if (!ts) return res.status(404).json({ error: 'Timesheet not found' });
       const approvedAt = new Date().toISOString();
-      sqliteDb.prepare('UPDATE timesheets SET status = ?, approved_at = ? WHERE id = ?').run('approved', approvedAt, id);
+      sqliteDb.prepare('UPDATE timesheets SET status = ?, approved_at = ?, updated_at = ? WHERE id = ?').run('approved', approvedAt, approvedAt, id);
+      await logTimesheetEvent(id, req.user.id, 'approved', ts.status, 'approved', 'Client approved timesheet.');
       const updated = sqliteDb.prepare('SELECT * FROM timesheets WHERE id = ?').get(id);
       sendOwnerNotification(updated);
       return res.json(updated);
@@ -721,7 +1026,8 @@ app.post('/api/timesheets/:id/approve', authMiddleware, async (req, res) => {
     const tsRes = await pool.query('SELECT * FROM timesheets WHERE id=$1 AND client_id=$2', [id, req.user.id]);
     if (tsRes.rowCount === 0) return res.status(404).json({ error: 'Timesheet not found' });
     const approvedAt = new Date().toISOString();
-    await pool.query('UPDATE timesheets SET status=$1, approved_at=$2 WHERE id=$3', ['approved', approvedAt, id]);
+    await pool.query('UPDATE timesheets SET status=$1, approved_at=$2, updated_at=$2 WHERE id=$3', ['approved', approvedAt, id]);
+    await logTimesheetEvent(id, req.user.id, 'approved', tsRes.rows[0].status, 'approved', 'Client approved timesheet.');
     const updated = await pool.query('SELECT * FROM timesheets WHERE id=$1', [id]);
     sendOwnerNotification(updated.rows[0]);
     res.json(updated.rows[0]);
@@ -760,6 +1066,31 @@ app.get('/api/timesheets', authMiddleware, async (req, res) => {
   }
 });
 
+// Timesheet detail with Phase 2 entries and audit events.
+app.get('/api/timesheets/:id', authMiddleware, async (req, res) => {
+  const id = req.params.id;
+  try {
+    let ts;
+    let entries = [];
+    let events = [];
+    if (useSqlite) {
+      ts = sqliteDb.prepare('SELECT * FROM timesheets WHERE id = ?').get(id);
+      if (!ts) return res.status(404).json({ error: 'Timesheet not found' });
+      entries = sqliteDb.prepare('SELECT * FROM timesheet_entries WHERE timesheet_id = ? ORDER BY work_date, created_at').all(id);
+      events = sqliteDb.prepare('SELECT * FROM timesheet_events WHERE timesheet_id = ? ORDER BY created_at').all(id);
+    } else {
+      const r = await pool.query('SELECT * FROM timesheets WHERE id=$1', [id]);
+      if (r.rowCount === 0) return res.status(404).json({ error: 'Timesheet not found' });
+      ts = r.rows[0];
+      entries = (await pool.query('SELECT * FROM timesheet_entries WHERE timesheet_id=$1 ORDER BY work_date, created_at', [id])).rows;
+      events = (await pool.query('SELECT * FROM timesheet_events WHERE timesheet_id=$1 ORDER BY created_at', [id])).rows;
+    }
+    const canSee = req.user.role === 'owner' || req.user.id === ts.staff_id || req.user.id === ts.client_id;
+    if (!canSee) return res.status(403).json({ error: 'Forbidden' });
+    res.json({ ...serializeTimesheet(ts, entries), events });
+  } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
+});
+
 // Owner: create a draft invoice from approved, uninvoiced timesheets.
 app.post('/api/invoices/generate', authMiddleware, async (req, res) => {
   if (req.user.role !== 'owner') return res.status(403).json({ error: 'Forbidden' });
@@ -788,8 +1119,12 @@ app.post('/api/invoices/generate', authMiddleware, async (req, res) => {
       const tx = sqliteDb.transaction(() => {
         sqliteDb.prepare('INSERT INTO invoices(id,invoice_number,client_id,period_type,period_start,period_end,total_hours,hourly_rate,total_amount,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)')
           .run(id, number, invoiceClientId, periodType, periodStart, periodEnd, totalHours, hourlyRate, totalAmount, 'draft', createdAt);
-        const update = sqliteDb.prepare('UPDATE timesheets SET status = ?, invoice_id = ? WHERE id = ?');
-        rows.forEach(r => update.run('invoiced', id, r.id));
+        const update = sqliteDb.prepare('UPDATE timesheets SET status = ?, invoice_id = ?, invoiced_at = ?, updated_at = ? WHERE id = ?');
+        const event = sqliteDb.prepare('INSERT INTO timesheet_events(id,timesheet_id,actor_id,event_type,from_status,to_status,comment,created_at) VALUES(?,?,?,?,?,?,?,?)');
+        rows.forEach(r => {
+          update.run('invoiced', id, createdAt, createdAt, r.id);
+          event.run(crypto.randomUUID(), r.id, req.user.id, 'invoiced', r.status, 'invoiced', `Locked to invoice ${number}.`, createdAt);
+        });
       });
       tx();
       return res.json({ id, invoice_number: number, client_id: invoiceClientId, period_type: periodType, period_start: periodStart, period_end: periodEnd, total_hours: totalHours, hourly_rate: hourlyRate, total_amount: totalAmount, status: 'draft', created_at: createdAt, timesheets: rows });
@@ -812,7 +1147,10 @@ app.post('/api/invoices/generate', authMiddleware, async (req, res) => {
     const totalHours = ts.rows.reduce((sum, r) => sum + Number(r.hours || 0), 0);
     const totalAmount = toMoney(totalHours * hourlyRate);
     await pool.query('INSERT INTO invoices(id,invoice_number,client_id,period_type,period_start,period_end,total_hours,hourly_rate,total_amount,status,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)', [id, number, invoiceClientId, periodType, periodStart, periodEnd, totalHours, hourlyRate, totalAmount, 'draft', createdAt]);
-    await pool.query('UPDATE timesheets SET status=$1, invoice_id=$2 WHERE id = ANY($3)', ['invoiced', id, ts.rows.map(r => r.id)]);
+    await pool.query('UPDATE timesheets SET status=$1, invoice_id=$2, invoiced_at=$3, updated_at=$3 WHERE id = ANY($4)', ['invoiced', id, createdAt, ts.rows.map(r => r.id)]);
+    for (const r of ts.rows) {
+      await logTimesheetEvent(r.id, req.user.id, 'invoiced', r.status, 'invoiced', `Locked to invoice ${number}.`);
+    }
     await pool.query('COMMIT');
     res.json({ id, invoice_number: number, client_id: invoiceClientId, period_type: periodType, period_start: periodStart, period_end: periodEnd, total_hours: totalHours, hourly_rate: hourlyRate, total_amount: totalAmount, status: 'draft', created_at: createdAt, timesheets: ts.rows });
   } catch (e) {
@@ -852,5 +1190,12 @@ app.get('/api/invoices/:id', authMiddleware, async (req, res) => {
   } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
 });
 
-app.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));
+initDb()
+  .then(() => {
+    app.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));
+  })
+  .catch(err => {
+    console.error('DB init error', err);
+    process.exit(1);
+  });
 
