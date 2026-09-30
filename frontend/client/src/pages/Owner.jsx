@@ -153,7 +153,11 @@ export default function OwnerPage({ token }) {
               <h5>Staff: {userMap[staffId] ? userMap[staffId].name : staffId}</h5>
               <ul>
                 {grouped[staffId].map(t => (
-                  <li key={t.id}>{t.date} - {t.hours}h - {t.notes} - Client: {userMap[t.client_id] ? userMap[t.client_id].name : t.client_id} <button onClick={()=>{ if (confirm('Delete this timesheet?')) axios.delete(`${API}/api/timesheets/${t.id}`, { headers: { Authorization: `Bearer ${token}` } }).then(()=>loadTimes(viewMode)).catch(()=>alert('Failed')) }}>Delete</button></li>
+                  <li key={t.id}>
+                    {t.date} - {t.hours}h - {t.status} - {t.notes} - Client: {userMap[t.client_id] ? userMap[t.client_id].name : t.client_id}
+                    {t.return_reason && <div><strong>Return reason:</strong> {t.return_reason}</div>}
+                    <button onClick={()=>{ if (confirm('Delete this timesheet?')) axios.delete(`${API}/api/timesheets/${t.id}`, { headers: { Authorization: `Bearer ${token}` } }).then(()=>loadTimes(viewMode)).catch(()=>alert('Failed')) }}>Delete</button>
+                  </li>
                 ))}
               </ul>
             </div>

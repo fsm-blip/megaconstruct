@@ -77,6 +77,7 @@ async function initDb() {
         period_end TEXT,
         submitted_at TEXT,
         returned_at TEXT,
+        return_reason TEXT,
         invoiced_at TEXT,
         updated_at TEXT
       );
@@ -139,6 +140,7 @@ async function initDb() {
       ['period_end', 'TEXT'],
       ['submitted_at', 'TEXT'],
       ['returned_at', 'TEXT'],
+      ['return_reason', 'TEXT'],
       ['invoiced_at', 'TEXT'],
       ['updated_at', 'TEXT']
     ];
@@ -182,6 +184,7 @@ async function initDb() {
         period_end date,
         submitted_at timestamptz,
         returned_at timestamptz,
+        return_reason text,
         invoiced_at timestamptz,
         updated_at timestamptz
       );
@@ -250,6 +253,7 @@ async function initDb() {
       await pool.query("ALTER TABLE timesheets ADD COLUMN IF NOT EXISTS period_end date");
       await pool.query("ALTER TABLE timesheets ADD COLUMN IF NOT EXISTS submitted_at timestamptz");
       await pool.query("ALTER TABLE timesheets ADD COLUMN IF NOT EXISTS returned_at timestamptz");
+      await pool.query("ALTER TABLE timesheets ADD COLUMN IF NOT EXISTS return_reason text");
       await pool.query("ALTER TABLE timesheets ADD COLUMN IF NOT EXISTS invoiced_at timestamptz");
       await pool.query("ALTER TABLE timesheets ADD COLUMN IF NOT EXISTS updated_at timestamptz");
       await pool.query("CREATE INDEX IF NOT EXISTS idx_timesheets_staff_status ON timesheets(staff_id, status)");
@@ -404,6 +408,7 @@ function serializeTimesheet(row, entries = []) {
     submittedAt: row.submitted_at || row.created_at || null,
     approvedAt: row.approved_at || null,
     returnedAt: row.returned_at || null,
+    returnReason: row.return_reason || null,
     invoicedAt: row.invoiced_at || null,
     updatedAt: row.updated_at || row.created_at || null,
     entries
@@ -833,19 +838,20 @@ app.get('/api/timesheets/staff/pending', authMiddleware, async (req, res) => {
   } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
 });
 
-// Client: approved history (client-side view)
+// Client: reviewed history (approved, returned, and invoiced client-side view)
 app.get('/api/timesheets/client/history', authMiddleware, async (req, res) => {
   if (req.user.role !== 'client') return res.status(403).json({ error: 'Forbidden' });
   try {
+    const statuses = ['approved', 'returned', 'invoiced'];
     if (useSqlite) {
-      const rows = sqliteDb.prepare('SELECT * FROM timesheets WHERE client_id = ? AND status = ? ORDER BY approved_at DESC').all(req.user.id, 'approved');
+      const rows = sqliteDb.prepare(`SELECT * FROM timesheets WHERE client_id = ? AND status IN (${statuses.map(() => '?').join(',')}) ORDER BY COALESCE(approved_at, returned_at, invoiced_at, updated_at, created_at) DESC`).all(req.user.id, ...statuses);
       const users = {};
       sqliteDb.prepare('SELECT id,name,email FROM users').all().forEach(u => { users[u.id] = u; users[String(u.id)] = u; });
       const out = rows.map(r => ({ ...r, staff_name: (users[r.staff_id] && users[r.staff_id].name) || null, staff_email: (users[r.staff_id] && users[r.staff_id].email) || null }));
       return res.json(out);
     }
-    const q = `SELECT t.*, u.name as staff_name, u.email as staff_email FROM timesheets t LEFT JOIN users u ON u.id = t.staff_id WHERE t.client_id=$1 AND t.status=$2 ORDER BY t.approved_at DESC`;
-    const r = await pool.query(q, [req.user.id, 'approved']);
+    const q = `SELECT t.*, u.name as staff_name, u.email as staff_email FROM timesheets t LEFT JOIN users u ON u.id = t.staff_id WHERE t.client_id=$1 AND t.status = ANY($2::text[]) ORDER BY COALESCE(t.approved_at, t.returned_at, t.invoiced_at, t.updated_at, t.created_at) DESC`;
+    const r = await pool.query(q, [req.user.id, statuses]);
     res.json(r.rows);
   } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
 });
@@ -891,7 +897,7 @@ app.get('/api/clients', authMiddleware, async (req, res) => {
 
 // Staff list (for owner modal reassign)
 app.get('/api/staffs', authMiddleware, async (req, res) => {
-  if (!['owner','staff'].includes(req.user.role)) return res.status(403).json({ error: 'Forbidden' });
+  if (!['owner','staff','client'].includes(req.user.role)) return res.status(403).json({ error: 'Forbidden' });
   try {
     if (useSqlite) {
       const rows = sqliteDb.prepare("SELECT id,name,email FROM users WHERE role = 'staff'").all();
@@ -975,10 +981,94 @@ app.post('/api/timesheets/:id/submit', authMiddleware, async (req, res) => {
     if (!ts) return res.status(404).json({ error: 'Timesheet not found' });
     if (!['draft', 'returned'].includes(ts.status)) return res.status(400).json({ error: 'Only draft or returned timesheets can be submitted' });
     if (!entryCount) return res.status(400).json({ error: 'Add at least one entry before submitting' });
-    if (useSqlite) sqliteDb.prepare('UPDATE timesheets SET status = ?, submitted_at = ?, returned_at = NULL, updated_at = ? WHERE id = ?').run('submitted', now, now, id);
-    else await pool.query('UPDATE timesheets SET status=$1, submitted_at=$2, returned_at=NULL, updated_at=$2 WHERE id=$3', ['submitted', now, id]);
+    if (useSqlite) sqliteDb.prepare('UPDATE timesheets SET status = ?, submitted_at = ?, returned_at = NULL, return_reason = NULL, updated_at = ? WHERE id = ?').run('submitted', now, now, id);
+    else await pool.query('UPDATE timesheets SET status=$1, submitted_at=$2, returned_at=NULL, return_reason=NULL, updated_at=$2 WHERE id=$3', ['submitted', now, id]);
     await logTimesheetEvent(id, req.user.id, 'submitted', ts.status, 'submitted', 'Staff submitted timesheet.');
     res.json({ ok: true, status: 'submitted' });
+  } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
+});
+
+
+// Staff: update the legacy/single entry on a returned timesheet, then resubmit for approval.
+app.patch('/api/timesheets/:id', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'staff') return res.status(403).json({ error: 'Forbidden' });
+  const id = req.params.id;
+  const workDate = normalizeDateOnly(req.body.date || req.body.workDate);
+  const hours = Number(req.body.hours);
+  const notes = req.body.notes || '';
+  if (!workDate || !hours || hours <= 0) return res.status(400).json({ error: 'Missing or invalid fields' });
+  const now = new Date().toISOString();
+  const { periodStart, periodEnd } = timesheetPeriodForDate(workDate);
+  try {
+    let ts;
+    if (useSqlite) ts = sqliteDb.prepare('SELECT * FROM timesheets WHERE id = ? AND staff_id = ?').get(id, req.user.id);
+    else {
+      const r = await pool.query('SELECT * FROM timesheets WHERE id=$1 AND staff_id=$2', [id, req.user.id]);
+      ts = r.rowCount ? r.rows[0] : null;
+    }
+    if (!ts) return res.status(404).json({ error: 'Timesheet not found' });
+    if (!['draft', 'returned'].includes(ts.status)) return res.status(400).json({ error: 'Only draft or returned timesheets can be edited' });
+    if (useSqlite) {
+      const tx = sqliteDb.transaction(() => {
+        sqliteDb.prepare('UPDATE timesheets SET date = ?, hours = ?, notes = ?, period_start = ?, period_end = ?, updated_at = ? WHERE id = ?')
+          .run(workDate, hours, notes, periodStart, periodEnd, now, id);
+        const entry = sqliteDb.prepare('SELECT id FROM timesheet_entries WHERE timesheet_id = ? ORDER BY created_at LIMIT 1').get(id);
+        if (entry) {
+          sqliteDb.prepare('UPDATE timesheet_entries SET work_date = ?, hours = ?, notes = ?, updated_at = ? WHERE id = ?')
+            .run(workDate, hours, notes, now, entry.id);
+        } else {
+          sqliteDb.prepare('INSERT INTO timesheet_entries(id,timesheet_id,work_date,hours,break_minutes,notes,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)')
+            .run(crypto.randomUUID(), id, workDate, hours, 0, notes, now, now);
+        }
+      });
+      tx();
+      await logTimesheetEvent(id, req.user.id, 'edited', ts.status, ts.status, 'Staff edited returned/draft timesheet.');
+      return res.json(sqliteDb.prepare('SELECT * FROM timesheets WHERE id = ?').get(id));
+    }
+    await pool.query('BEGIN');
+    await pool.query('UPDATE timesheets SET date=$1, hours=$2, notes=$3, period_start=$4, period_end=$5, updated_at=$6 WHERE id=$7', [workDate, hours, notes, periodStart, periodEnd, now, id]);
+    const er = await pool.query('SELECT id FROM timesheet_entries WHERE timesheet_id=$1 ORDER BY created_at LIMIT 1', [id]);
+    if (er.rowCount > 0) {
+      await pool.query('UPDATE timesheet_entries SET work_date=$1, hours=$2, notes=$3, updated_at=$4 WHERE id=$5', [workDate, hours, notes, now, er.rows[0].id]);
+    } else {
+      await pool.query('INSERT INTO timesheet_entries(id,timesheet_id,work_date,hours,break_minutes,notes,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8)', [crypto.randomUUID(), id, workDate, hours, 0, notes, now, now]);
+    }
+    await pool.query('COMMIT');
+    await logTimesheetEvent(id, req.user.id, 'edited', ts.status, ts.status, 'Staff edited returned/draft timesheet.');
+    const updated = await pool.query('SELECT * FROM timesheets WHERE id=$1', [id]);
+    res.json(updated.rows[0]);
+  } catch (e) {
+    if (!useSqlite) { try { await pool.query('ROLLBACK'); } catch (_) {} }
+    console.error(e);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Client: return a submitted timesheet to staff with a reason.
+app.post('/api/timesheets/:id/return', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'client') return res.status(403).json({ error: 'Forbidden' });
+  const id = req.params.id;
+  const reason = String(req.body.reason || req.body.comment || '').trim();
+  if (!reason) return res.status(400).json({ error: 'Return reason is required' });
+  const now = new Date().toISOString();
+  try {
+    let ts;
+    if (useSqlite) ts = sqliteDb.prepare('SELECT * FROM timesheets WHERE id = ? AND client_id = ?').get(id, req.user.id);
+    else {
+      const r = await pool.query('SELECT * FROM timesheets WHERE id=$1 AND client_id=$2', [id, req.user.id]);
+      ts = r.rowCount ? r.rows[0] : null;
+    }
+    if (!ts) return res.status(404).json({ error: 'Timesheet not found' });
+    if (ts.status !== 'submitted') return res.status(400).json({ error: 'Only submitted timesheets can be returned' });
+    if (useSqlite) {
+      sqliteDb.prepare('UPDATE timesheets SET status = ?, returned_at = ?, return_reason = ?, updated_at = ? WHERE id = ?').run('returned', now, reason, now, id);
+      await logTimesheetEvent(id, req.user.id, 'returned', ts.status, 'returned', reason);
+      return res.json(sqliteDb.prepare('SELECT * FROM timesheets WHERE id = ?').get(id));
+    }
+    await pool.query('UPDATE timesheets SET status=$1, returned_at=$2, return_reason=$3, updated_at=$2 WHERE id=$4', ['returned', now, reason, id]);
+    await logTimesheetEvent(id, req.user.id, 'returned', ts.status, 'returned', reason);
+    const updated = await pool.query('SELECT * FROM timesheets WHERE id=$1', [id]);
+    res.json(updated.rows[0]);
   } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
 });
 
@@ -1035,8 +1125,9 @@ app.post('/api/timesheets/:id/approve', authMiddleware, async (req, res) => {
     if (useSqlite) {
       const ts = sqliteDb.prepare('SELECT * FROM timesheets WHERE id = ? AND client_id = ?').get(id, req.user.id);
       if (!ts) return res.status(404).json({ error: 'Timesheet not found' });
+      if (ts.status !== 'submitted') return res.status(400).json({ error: 'Only submitted timesheets can be approved' });
       const approvedAt = new Date().toISOString();
-      sqliteDb.prepare('UPDATE timesheets SET status = ?, approved_at = ?, updated_at = ? WHERE id = ?').run('approved', approvedAt, approvedAt, id);
+      sqliteDb.prepare('UPDATE timesheets SET status = ?, approved_at = ?, return_reason = NULL, updated_at = ? WHERE id = ?').run('approved', approvedAt, approvedAt, id);
       await logTimesheetEvent(id, req.user.id, 'approved', ts.status, 'approved', 'Client approved timesheet.');
       const updated = sqliteDb.prepare('SELECT * FROM timesheets WHERE id = ?').get(id);
       sendOwnerNotification(updated);
@@ -1044,8 +1135,9 @@ app.post('/api/timesheets/:id/approve', authMiddleware, async (req, res) => {
     }
     const tsRes = await pool.query('SELECT * FROM timesheets WHERE id=$1 AND client_id=$2', [id, req.user.id]);
     if (tsRes.rowCount === 0) return res.status(404).json({ error: 'Timesheet not found' });
+    if (tsRes.rows[0].status !== 'submitted') return res.status(400).json({ error: 'Only submitted timesheets can be approved' });
     const approvedAt = new Date().toISOString();
-    await pool.query('UPDATE timesheets SET status=$1, approved_at=$2, updated_at=$2 WHERE id=$3', ['approved', approvedAt, id]);
+    await pool.query('UPDATE timesheets SET status=$1, approved_at=$2, return_reason=NULL, updated_at=$2 WHERE id=$3', ['approved', approvedAt, id]);
     await logTimesheetEvent(id, req.user.id, 'approved', tsRes.rows[0].status, 'approved', 'Client approved timesheet.');
     const updated = await pool.query('SELECT * FROM timesheets WHERE id=$1', [id]);
     sendOwnerNotification(updated.rows[0]);
