@@ -355,7 +355,26 @@ function makeResetToken() {
 
 function normalizeDateOnly(value) {
   if (!value) return null;
-  const d = new Date(value);
+  const raw = String(value).trim();
+
+  // Native <input type="date"> values and API callers should use ISO yyyy-mm-dd.
+  const iso = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (iso) return raw;
+
+  // The current React staff form is a plain text input, so users commonly type dd/mm/yyyy.
+  const uk = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (uk) {
+    const day = Number(uk[1]);
+    const month = Number(uk[2]);
+    const year = Number(uk[3]);
+    const d = new Date(Date.UTC(year, month - 1, day));
+    if (d.getUTCFullYear() === year && d.getUTCMonth() === month - 1 && d.getUTCDate() === day) {
+      return d.toISOString().slice(0, 10);
+    }
+    return null;
+  }
+
+  const d = new Date(raw);
   if (Number.isNaN(d.getTime())) return null;
   return d.toISOString().slice(0, 10);
 }
