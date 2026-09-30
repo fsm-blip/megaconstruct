@@ -2,6 +2,20 @@ import React, { useState, useEffect } from 'react'
 import axios from 'axios'
 const API = import.meta.env.VITE_API_URL || ''
 const cleanDate = value => value ? String(value).slice(0, 10) : ''
+
+function addDays(isoDate, days) {
+  if (!isoDate) return ''
+  const d = new Date(`${isoDate}T00:00:00Z`)
+  d.setUTCDate(d.getUTCDate() + days)
+  return d.toISOString().slice(0, 10)
+}
+
+function endOfMonth(isoDate) {
+  if (!isoDate) return ''
+  const d = new Date(`${isoDate}T00:00:00Z`)
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).toISOString().slice(0, 10)
+}
+
 export default function OwnerPage({ token }) {
   const [users, setUsers] = useState([])
   const [times, setTimes] = useState([])
@@ -18,8 +32,33 @@ export default function OwnerPage({ token }) {
   const [invoiceStart, setInvoiceStart] = useState('')
   const [invoiceEnd, setInvoiceEnd] = useState('')
   const [invoiceRate, setInvoiceRate] = useState('')
+  const [invoicePreview, setInvoicePreview] = useState(null)
+  const [selectedInvoice, setSelectedInvoice] = useState(null)
 
   useEffect(()=>{ if (token) { loadUsers(); loadClients(); loadTimes(); loadInvoices(); } }, [token])
+
+  function invoicePayload() {
+    return {
+      clientId: invoiceClientId,
+      periodType: invoicePeriodType,
+      periodStart: invoiceStart,
+      periodEnd: invoiceEnd,
+      hourlyRate: Number(invoiceRate)
+    }
+  }
+
+  function setPeriodType(value) {
+    setInvoicePeriodType(value)
+    if (invoiceStart) setInvoiceEnd(value === 'monthly' ? endOfMonth(invoiceStart) : addDays(invoiceStart, 6))
+    setInvoicePreview(null)
+  }
+
+  function setPeriodStart(value) {
+    setInvoiceStart(value)
+    if (value) setInvoiceEnd(invoicePeriodType === 'monthly' ? endOfMonth(value) : addDays(value, 6))
+    else setInvoiceEnd('')
+    setInvoicePreview(null)
+  }
 
   async function loadUsers() {
     try {
@@ -66,23 +105,37 @@ export default function OwnerPage({ token }) {
     } catch (e) { console.error('loadInvoices', e); alert('Failed loading invoices') }
   }
 
-  async function generateInvoice() {
+  async function previewInvoice() {
     if (!invoiceClientId || !invoiceStart || !invoiceEnd || !invoiceRate) return alert('Select client, period and hourly rate')
     try {
-      const payload = {
-        clientId: invoiceClientId,
-        periodType: invoicePeriodType,
-        periodStart: invoiceStart,
-        periodEnd: invoiceEnd,
-        hourlyRate: Number(invoiceRate)
-      }
-      await axios.post(`${API}/api/invoices/generate`, payload, { headers: { Authorization: `Bearer ${token}` } })
+      const r = await axios.post(`${API}/api/invoices/preview`, invoicePayload(), { headers: { Authorization: `Bearer ${token}` } })
+      setInvoicePreview(r.data)
+    } catch (e) {
+      console.error('previewInvoice', e)
+      alert(e.response?.data?.error || 'Invoice preview failed')
+    }
+  }
+
+  async function generateInvoice() {
+    if (!invoiceClientId || !invoiceStart || !invoiceEnd || !invoiceRate) return alert('Select client, period and hourly rate')
+    if (!invoicePreview || invoicePreview.count === 0) return alert('Preview the invoice first and confirm it has approved uninvoiced timesheets')
+    try {
+      const r = await axios.post(`${API}/api/invoices/generate`, invoicePayload(), { headers: { Authorization: `Bearer ${token}` } })
       alert('Draft invoice generated')
+      setInvoicePreview(null)
+      setSelectedInvoice(r.data)
       loadInvoices(); loadTimes(viewMode)
     } catch (e) {
       console.error('generateInvoice', e)
       alert(e.response?.data?.error || 'Invoice generation failed')
     }
+  }
+
+  async function viewInvoice(id) {
+    try {
+      const r = await axios.get(`${API}/api/invoices/${id}`, { headers: { Authorization: `Bearer ${token}` } })
+      setSelectedInvoice(r.data)
+    } catch (e) { console.error('viewInvoice', e); alert('Failed loading invoice detail') }
   }
 
   async function deleteUser(id) {
@@ -108,9 +161,10 @@ export default function OwnerPage({ token }) {
     }
   }
 
-  // group timesheets by staff id and include friendly names when possible
   const userMap = users.reduce((acc, u) => { acc[u.id] = u; return acc }, {})
   const grouped = times.reduce((acc, t) => { acc[t.staff_id] = acc[t.staff_id] || []; acc[t.staff_id].push(t); return acc }, {})
+  const previewLines = invoicePreview?.lines || []
+  const detailLines = selectedInvoice?.lines || []
 
   return (
     <div className="card">
@@ -146,8 +200,8 @@ export default function OwnerPage({ token }) {
           <h4>Timesheets (Owner)</h4>
           <div style={{marginBottom:8}}>
             <button onClick={()=>{ setViewMode('pending'); loadTimes('pending') }}>Load pending</button>
-            <button onClick={()=>{ setViewMode('approved'); loadTimes('approved') }} style={{marginLeft:8}}>Load approved</button>
-            <button onClick={()=>{ if (confirm('Delete ALL timesheets?')) { axios.delete(`${API}/api/timesheets`, { headers: { Authorization: `Bearer ${token}` } }).then(()=>loadTimes(viewMode)).catch(()=>alert('Failed')) } }} style={{marginLeft:8}}>Clear all</button>
+            <button onClick={()=>{ setViewMode('approved'); loadTimes('approved') }} style={{marginLeft:8}}>Load approved uninvoiced</button>
+            <button onClick={()=>{ if (confirm('Delete ALL timesheets? This is permanent.')) { axios.delete(`${API}/api/timesheets`, { headers: { Authorization: `Bearer ${token}` } }).then(()=>loadTimes(viewMode)).catch(()=>alert('Failed')) } }} style={{marginLeft:8}}>Delete all timesheets</button>
           </div>
           {Object.keys(grouped).length === 0 ? <p>No timesheets</p> : Object.keys(grouped).map(staffId => (
             <div key={staffId} style={{marginTop:12}}>
@@ -164,31 +218,62 @@ export default function OwnerPage({ token }) {
             </div>
           ))}
         </div>
-        <div style={{flex:1.3}}>
+        <div style={{flex:1.6}}>
           <h4>Invoices</h4>
           <div style={{display:'grid', gap:8}}>
-            <select value={invoiceClientId} onChange={e=>setInvoiceClientId(e.target.value)}>
+            <select value={invoiceClientId} onChange={e=>{ setInvoiceClientId(e.target.value); setInvoicePreview(null) }}>
               <option value="">Select client</option>
               {clients.map(c=> <option key={c.id} value={c.id}>{c.name} ({c.email})</option>)}
             </select>
-            <select value={invoicePeriodType} onChange={e=>setInvoicePeriodType(e.target.value)}>
+            <select value={invoicePeriodType} onChange={e=>setPeriodType(e.target.value)}>
               <option value="weekly">Weekly</option>
               <option value="monthly">Monthly</option>
             </select>
-            <input type="date" value={invoiceStart} onChange={e=>setInvoiceStart(e.target.value)} />
-            <input type="date" value={invoiceEnd} onChange={e=>setInvoiceEnd(e.target.value)} />
-            <input placeholder="hourly rate" value={invoiceRate} onChange={e=>setInvoiceRate(e.target.value)} />
+            <label>Period start</label>
+            <input type="date" value={invoiceStart} onChange={e=>setPeriodStart(e.target.value)} />
+            <label>Period end</label>
+            <input type="date" value={invoiceEnd} onChange={e=>{ setInvoiceEnd(e.target.value); setInvoicePreview(null) }} />
+            <input placeholder="hourly rate" value={invoiceRate} onChange={e=>{ setInvoiceRate(e.target.value); setInvoicePreview(null) }} />
+            <button onClick={previewInvoice}>Preview invoice</button>
             <button onClick={generateInvoice}>Generate draft invoice</button>
             <button onClick={loadInvoices}>Refresh invoices</button>
           </div>
+
+          {invoicePreview && (
+            <div style={{marginTop:12, padding:8, border:'1px solid #ccc'}}>
+              <h5>Invoice preview</h5>
+              {invoicePreview.count === 0 ? <p>{invoicePreview.message || 'No approved uninvoiced timesheets found.'}</p> : (
+                <>
+                  <p>{invoicePreview.count} line(s), {invoicePreview.totalHours}h, £{Number(invoicePreview.totalAmount).toFixed(2)}</p>
+                  <ul>
+                    {previewLines.map(l => <li key={l.timesheet_id}>{cleanDate(l.work_date)} - {l.staff_name || l.staff_id} - {l.hours}h x £{Number(l.hourly_rate).toFixed(2)} = £{Number(l.line_amount).toFixed(2)}</li>)}
+                  </ul>
+                </>
+              )}
+            </div>
+          )}
+
           {invoices.length === 0 ? <p>No invoices yet</p> : (
             <ul>
               {invoices.map(i => (
                 <li key={i.id}>
                   {i.invoice_number} - {i.client_name || i.client_id} - {cleanDate(i.period_start)} to {cleanDate(i.period_end)} - {i.total_hours}h - £{Number(i.total_amount).toFixed(2)} - {i.status}
+                  <button onClick={()=>viewInvoice(i.id)} style={{marginLeft:8}}>View</button>
                 </li>
               ))}
             </ul>
+          )}
+
+          {selectedInvoice && (
+            <div style={{marginTop:12, padding:8, border:'1px solid #ccc'}}>
+              <h5>Invoice detail</h5>
+              <p>{selectedInvoice.invoice_number} - {cleanDate(selectedInvoice.period_start)} to {cleanDate(selectedInvoice.period_end)} - {selectedInvoice.total_hours}h - £{Number(selectedInvoice.total_amount).toFixed(2)} - {selectedInvoice.status}</p>
+              {detailLines.length > 0 ? (
+                <ul>
+                  {detailLines.map(l => <li key={l.id || l.timesheet_id}>{cleanDate(l.work_date)} - {l.staff_name || l.staff_id} - {l.hours}h x £{Number(l.hourly_rate).toFixed(2)} = £{Number(l.line_amount).toFixed(2)} {l.notes ? `- ${l.notes}` : ''}</li>)}
+                </ul>
+              ) : <p>No invoice line detail stored for this invoice.</p>}
+            </div>
           )}
         </div>
       </div>

@@ -127,6 +127,18 @@ async function initDb() {
         created_at TEXT NOT NULL,
         issued_at TEXT
       );
+      CREATE TABLE IF NOT EXISTS invoice_lines (
+        id TEXT PRIMARY KEY,
+        invoice_id TEXT NOT NULL,
+        timesheet_id TEXT NOT NULL UNIQUE,
+        staff_id TEXT,
+        work_date TEXT NOT NULL,
+        hours REAL NOT NULL,
+        hourly_rate REAL NOT NULL,
+        line_amount REAL NOT NULL,
+        notes TEXT,
+        created_at TEXT NOT NULL
+      );
     `);
     // add client_id column to users if missing
     try {
@@ -158,6 +170,7 @@ async function initDb() {
       CREATE INDEX IF NOT EXISTS idx_timesheets_invoice ON timesheets(invoice_id);
       CREATE INDEX IF NOT EXISTS idx_timesheet_entries_parent ON timesheet_entries(timesheet_id);
       CREATE INDEX IF NOT EXISTS idx_timesheet_events_parent ON timesheet_events(timesheet_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_invoice_lines_invoice ON invoice_lines(invoice_id);
     `);
   } else {
     await pool.query(`
@@ -243,6 +256,20 @@ async function initDb() {
         issued_at timestamptz
       );
     `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS invoice_lines (
+        id text PRIMARY KEY,
+        invoice_id text NOT NULL REFERENCES invoices(id) ON DELETE CASCADE,
+        timesheet_id text NOT NULL UNIQUE REFERENCES timesheets(id),
+        staff_id text REFERENCES users(id),
+        work_date date NOT NULL,
+        hours numeric NOT NULL,
+        hourly_rate numeric NOT NULL,
+        line_amount numeric NOT NULL,
+        notes text,
+        created_at timestamptz NOT NULL
+      );
+    `);
     // ensure client_id column exists
     try {
       await pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS client_id text");
@@ -262,6 +289,7 @@ async function initDb() {
       await pool.query("CREATE INDEX IF NOT EXISTS idx_timesheets_invoice ON timesheets(invoice_id)");
       await pool.query("CREATE INDEX IF NOT EXISTS idx_timesheet_entries_parent ON timesheet_entries(timesheet_id)");
       await pool.query("CREATE INDEX IF NOT EXISTS idx_timesheet_events_parent ON timesheet_events(timesheet_id, created_at)");
+      await pool.query("CREATE INDEX IF NOT EXISTS idx_invoice_lines_invoice ON invoice_lines(invoice_id)");
     } catch (e) { /* ignore */ }
   }
 
@@ -1202,68 +1230,132 @@ app.get('/api/timesheets/:id', authMiddleware, async (req, res) => {
   } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
 });
 
+
+function invoiceLineFromTimesheet(row, hourlyRate) {
+  const hours = Number(row.hours || 0);
+  const rate = Number(hourlyRate || 0);
+  return {
+    timesheet_id: row.id,
+    staff_id: row.staff_id,
+    staff_name: row.staff_name || null,
+    staff_email: row.staff_email || null,
+    work_date: normalizeDateOnly(row.date || row.period_start),
+    hours,
+    hourly_rate: rate,
+    line_amount: toMoney(hours * rate),
+    notes: row.notes || ''
+  };
+}
+
+function invoicePreviewPayload(rows, hourlyRate) {
+  const lines = rows.map(r => invoiceLineFromTimesheet(r, hourlyRate));
+  const totalHours = lines.reduce((sum, r) => sum + Number(r.hours || 0), 0);
+  const totalAmount = toMoney(lines.reduce((sum, r) => sum + Number(r.line_amount || 0), 0));
+  return { totalHours, hourlyRate: Number(hourlyRate), totalAmount, count: lines.length, lines };
+}
+
+async function findApprovedInvoiceTimesheets({ clientId, periodStart, periodEnd, lock = false }) {
+  if (useSqlite) {
+    return clientId
+      ? sqliteDb.prepare("SELECT t.*, u.name as staff_name, u.email as staff_email FROM timesheets t LEFT JOIN users u ON u.id = t.staff_id WHERE t.status = ? AND t.invoice_id IS NULL AND t.client_id = ? AND t.date BETWEEN ? AND ? ORDER BY t.date, u.name").all('approved', clientId, periodStart, periodEnd)
+      : sqliteDb.prepare("SELECT t.*, u.name as staff_name, u.email as staff_email FROM timesheets t LEFT JOIN users u ON u.id = t.staff_id WHERE t.status = ? AND t.invoice_id IS NULL AND t.date BETWEEN ? AND ? ORDER BY t.client_id, t.date, u.name").all('approved', periodStart, periodEnd);
+  }
+  const params = ['approved', periodStart, periodEnd];
+  let where = "t.status=$1 AND t.invoice_id IS NULL AND t.date BETWEEN $2 AND $3";
+  if (clientId) { params.push(clientId); where += ` AND t.client_id=$${params.length}`; }
+  const sql = `SELECT t.*, u.name as staff_name, u.email as staff_email FROM timesheets t LEFT JOIN users u ON u.id = t.staff_id WHERE ${where} ORDER BY t.client_id, t.date, u.name${lock ? ' FOR UPDATE OF t' : ''}`;
+  const r = await pool.query(sql, params);
+  return r.rows;
+}
+
+function readInvoiceRequest(body) {
+  const periodType = body.periodType === 'monthly' ? 'monthly' : 'weekly';
+  const periodStart = normalizeDateOnly(body.periodStart);
+  const periodEnd = normalizeDateOnly(body.periodEnd);
+  const clientId = body.clientId || null;
+  const hourlyRate = Number(body.hourlyRate || process.env.DEFAULT_HOURLY_RATE || 0);
+  return { periodType, periodStart, periodEnd, clientId, hourlyRate };
+}
+
+function validateInvoiceRequest({ periodStart, periodEnd, hourlyRate }) {
+  if (!periodStart || !periodEnd) return 'Invalid periodStart or periodEnd';
+  if (new Date(periodStart) > new Date(periodEnd)) return 'periodStart must be before periodEnd';
+  if (!hourlyRate || hourlyRate < 0) return 'hourlyRate must be greater than zero';
+  return null;
+}
+
+// Owner: preview approved, uninvoiced timesheets before invoice generation.
+app.post('/api/invoices/preview', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'owner') return res.status(403).json({ error: 'Forbidden' });
+  const request = readInvoiceRequest(req.body);
+  const validationError = validateInvoiceRequest(request);
+  if (validationError) return res.status(400).json({ error: validationError });
+  try {
+    const rows = await findApprovedInvoiceTimesheets(request);
+    if (rows.length === 0) return res.json({ ...request, count: 0, totalHours: 0, totalAmount: 0, lines: [], message: 'No approved uninvoiced timesheets found for this period' });
+    const invoiceClientId = request.clientId || rows[0].client_id;
+    if (!request.clientId && rows.some(r => r.client_id !== invoiceClientId)) return res.status(400).json({ error: 'Select a client when multiple clients have approved timesheets in the period' });
+    res.json({ ...request, clientId: invoiceClientId, ...invoicePreviewPayload(rows, request.hourlyRate) });
+  } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
+});
+
 // Owner: create a draft invoice from approved, uninvoiced timesheets.
 app.post('/api/invoices/generate', authMiddleware, async (req, res) => {
   if (req.user.role !== 'owner') return res.status(403).json({ error: 'Forbidden' });
-  const periodType = req.body.periodType === 'monthly' ? 'monthly' : 'weekly';
-  const periodStart = normalizeDateOnly(req.body.periodStart);
-  const periodEnd = normalizeDateOnly(req.body.periodEnd);
-  const clientId = req.body.clientId || null;
-  const hourlyRate = Number(req.body.hourlyRate || process.env.DEFAULT_HOURLY_RATE || 0);
-  if (!periodStart || !periodEnd) return res.status(400).json({ error: 'Invalid periodStart or periodEnd' });
-  if (new Date(periodStart) > new Date(periodEnd)) return res.status(400).json({ error: 'periodStart must be before periodEnd' });
-  if (!hourlyRate || hourlyRate < 0) return res.status(400).json({ error: 'hourlyRate must be greater than zero' });
+  const { periodType, periodStart, periodEnd, clientId, hourlyRate } = readInvoiceRequest(req.body);
+  const validationError = validateInvoiceRequest({ periodStart, periodEnd, hourlyRate });
+  if (validationError) return res.status(400).json({ error: validationError });
 
   const id = crypto.randomUUID();
   const createdAt = new Date().toISOString();
   const number = invoiceNumber(periodType);
   try {
     if (useSqlite) {
-      const rows = clientId
-        ? sqliteDb.prepare("SELECT * FROM timesheets WHERE status = ? AND invoice_id IS NULL AND client_id = ? AND date BETWEEN ? AND ? ORDER BY date").all('approved', clientId, periodStart, periodEnd)
-        : sqliteDb.prepare("SELECT * FROM timesheets WHERE status = ? AND invoice_id IS NULL AND date BETWEEN ? AND ? ORDER BY client_id, date").all('approved', periodStart, periodEnd);
+      const rows = await findApprovedInvoiceTimesheets({ clientId, periodStart, periodEnd });
       if (rows.length === 0) return res.status(400).json({ error: 'No approved uninvoiced timesheets found for this period' });
       const invoiceClientId = clientId || rows[0].client_id;
       if (!clientId && rows.some(r => r.client_id !== invoiceClientId)) return res.status(400).json({ error: 'Select a client when multiple clients have approved timesheets in the period' });
-      const totalHours = rows.reduce((sum, r) => sum + Number(r.hours || 0), 0);
-      const totalAmount = toMoney(totalHours * hourlyRate);
+      const preview = invoicePreviewPayload(rows, hourlyRate);
       const tx = sqliteDb.transaction(() => {
         sqliteDb.prepare('INSERT INTO invoices(id,invoice_number,client_id,period_type,period_start,period_end,total_hours,hourly_rate,total_amount,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)')
-          .run(id, number, invoiceClientId, periodType, periodStart, periodEnd, totalHours, hourlyRate, totalAmount, 'draft', createdAt);
+          .run(id, number, invoiceClientId, periodType, periodStart, periodEnd, preview.totalHours, hourlyRate, preview.totalAmount, 'draft', createdAt);
+        const insertLine = sqliteDb.prepare('INSERT INTO invoice_lines(id,invoice_id,timesheet_id,staff_id,work_date,hours,hourly_rate,line_amount,notes,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)');
         const update = sqliteDb.prepare('UPDATE timesheets SET status = ?, invoice_id = ?, invoiced_at = ?, updated_at = ? WHERE id = ?');
         const event = sqliteDb.prepare('INSERT INTO timesheet_events(id,timesheet_id,actor_id,event_type,from_status,to_status,comment,created_at) VALUES(?,?,?,?,?,?,?,?)');
+        preview.lines.forEach(line => {
+          insertLine.run(crypto.randomUUID(), id, line.timesheet_id, line.staff_id, line.work_date, line.hours, line.hourly_rate, line.line_amount, line.notes, createdAt);
+        });
         rows.forEach(r => {
           update.run('invoiced', id, createdAt, createdAt, r.id);
           event.run(crypto.randomUUID(), r.id, req.user.id, 'invoiced', r.status, 'invoiced', `Locked to invoice ${number}.`, createdAt);
         });
       });
       tx();
-      return res.json({ id, invoice_number: number, client_id: invoiceClientId, period_type: periodType, period_start: periodStart, period_end: periodEnd, total_hours: totalHours, hourly_rate: hourlyRate, total_amount: totalAmount, status: 'draft', created_at: createdAt, timesheets: rows });
+      return res.json({ id, invoice_number: number, client_id: invoiceClientId, period_type: periodType, period_start: periodStart, period_end: periodEnd, total_hours: preview.totalHours, hourly_rate: hourlyRate, total_amount: preview.totalAmount, status: 'draft', created_at: createdAt, timesheets: rows, lines: preview.lines });
     }
 
     await pool.query('BEGIN');
-    const params = ['approved', periodStart, periodEnd];
-    let where = "status=$1 AND invoice_id IS NULL AND date BETWEEN $2 AND $3";
-    if (clientId) { params.push(clientId); where += ` AND client_id=$${params.length}`; }
-    const ts = await pool.query(`SELECT * FROM timesheets WHERE ${where} ORDER BY client_id, date FOR UPDATE`, params);
-    if (ts.rowCount === 0) {
+    const rows = await findApprovedInvoiceTimesheets({ clientId, periodStart, periodEnd, lock: true });
+    if (rows.length === 0) {
       await pool.query('ROLLBACK');
       return res.status(400).json({ error: 'No approved uninvoiced timesheets found for this period' });
     }
-    const invoiceClientId = clientId || ts.rows[0].client_id;
-    if (!clientId && ts.rows.some(r => r.client_id !== invoiceClientId)) {
+    const invoiceClientId = clientId || rows[0].client_id;
+    if (!clientId && rows.some(r => r.client_id !== invoiceClientId)) {
       await pool.query('ROLLBACK');
       return res.status(400).json({ error: 'Select a client when multiple clients have approved timesheets in the period' });
     }
-    const totalHours = ts.rows.reduce((sum, r) => sum + Number(r.hours || 0), 0);
-    const totalAmount = toMoney(totalHours * hourlyRate);
-    await pool.query('INSERT INTO invoices(id,invoice_number,client_id,period_type,period_start,period_end,total_hours,hourly_rate,total_amount,status,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)', [id, number, invoiceClientId, periodType, periodStart, periodEnd, totalHours, hourlyRate, totalAmount, 'draft', createdAt]);
-    await pool.query('UPDATE timesheets SET status=$1, invoice_id=$2, invoiced_at=$3, updated_at=$3 WHERE id = ANY($4)', ['invoiced', id, createdAt, ts.rows.map(r => r.id)]);
-    for (const r of ts.rows) {
+    const preview = invoicePreviewPayload(rows, hourlyRate);
+    await pool.query('INSERT INTO invoices(id,invoice_number,client_id,period_type,period_start,period_end,total_hours,hourly_rate,total_amount,status,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)', [id, number, invoiceClientId, periodType, periodStart, periodEnd, preview.totalHours, hourlyRate, preview.totalAmount, 'draft', createdAt]);
+    for (const line of preview.lines) {
+      await pool.query('INSERT INTO invoice_lines(id,invoice_id,timesheet_id,staff_id,work_date,hours,hourly_rate,line_amount,notes,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)', [crypto.randomUUID(), id, line.timesheet_id, line.staff_id, line.work_date, line.hours, line.hourly_rate, line.line_amount, line.notes, createdAt]);
+    }
+    await pool.query('UPDATE timesheets SET status=$1, invoice_id=$2, invoiced_at=$3, updated_at=$3 WHERE id = ANY($4)', ['invoiced', id, createdAt, rows.map(r => r.id)]);
+    for (const r of rows) {
       await logTimesheetEvent(r.id, req.user.id, 'invoiced', r.status, 'invoiced', `Locked to invoice ${number}.`);
     }
     await pool.query('COMMIT');
-    res.json({ id, invoice_number: number, client_id: invoiceClientId, period_type: periodType, period_start: periodStart, period_end: periodEnd, total_hours: totalHours, hourly_rate: hourlyRate, total_amount: totalAmount, status: 'draft', created_at: createdAt, timesheets: ts.rows });
+    res.json({ id, invoice_number: number, client_id: invoiceClientId, period_type: periodType, period_start: periodStart, period_end: periodEnd, total_hours: preview.totalHours, hourly_rate: hourlyRate, total_amount: preview.totalAmount, status: 'draft', created_at: createdAt, timesheets: rows, lines: preview.lines });
   } catch (e) {
     if (!useSqlite) { try { await pool.query('ROLLBACK'); } catch (_) {} }
     console.error(e);
@@ -1292,12 +1384,14 @@ app.get('/api/invoices/:id', authMiddleware, async (req, res) => {
       const invoice = sqliteDb.prepare('SELECT * FROM invoices WHERE id = ?').get(req.params.id);
       if (!invoice) return res.status(404).json({ error: 'Invoice not found' });
       const timesheets = sqliteDb.prepare('SELECT * FROM timesheets WHERE invoice_id = ? ORDER BY date').all(req.params.id);
-      return res.json({ ...invoice, timesheets });
+      const lines = sqliteDb.prepare('SELECT il.*, u.name as staff_name, u.email as staff_email FROM invoice_lines il LEFT JOIN users u ON u.id = il.staff_id WHERE il.invoice_id = ? ORDER BY il.work_date, u.name').all(req.params.id);
+      return res.json({ ...invoice, timesheets, lines });
     }
     const invoice = await pool.query('SELECT * FROM invoices WHERE id=$1', [req.params.id]);
     if (invoice.rowCount === 0) return res.status(404).json({ error: 'Invoice not found' });
     const timesheets = await pool.query('SELECT * FROM timesheets WHERE invoice_id=$1 ORDER BY date', [req.params.id]);
-    res.json({ ...invoice.rows[0], timesheets: timesheets.rows });
+    const lines = await pool.query('SELECT il.*, u.name as staff_name, u.email as staff_email FROM invoice_lines il LEFT JOIN users u ON u.id = il.staff_id WHERE il.invoice_id=$1 ORDER BY il.work_date, u.name', [req.params.id]);
+    res.json({ ...invoice.rows[0], timesheets: timesheets.rows, lines: lines.rows });
   } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
 });
 
