@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import axios from 'axios'
 const API = import.meta.env.VITE_API_URL || ''
+const cleanDate = value => value ? String(value).slice(0, 10) : ''
 
 export default function ClientPage({ token }) {
   const [list, setList] = useState([])
@@ -63,7 +64,7 @@ export default function ClientPage({ token }) {
         <ul>
           {list.map(t=> (
             <li key={t.id}>
-              {t.date} - {t.hours}h by {staffName(t)} - {t.notes}
+              {cleanDate(t.date)} - {t.hours}h by {staffName(t)} - {t.notes}
               <button onClick={()=>approve(t.id)} style={{marginLeft:8}}>Approve</button>
               <button onClick={()=>returnTimesheet(t.id)} style={{marginLeft:8}}>Return</button>
             </li>
@@ -77,7 +78,7 @@ export default function ClientPage({ token }) {
         <ul>
           {history.map(t => (
             <li key={t.id}>
-              {t.date} - {t.hours}h by {staffName(t)} - {t.status}
+              {cleanDate(t.date)} - {t.hours}h by {staffName(t)} - {t.status}
               {t.return_reason && <div><strong>Return reason:</strong> {t.return_reason}</div>}
             </li>
           ))}

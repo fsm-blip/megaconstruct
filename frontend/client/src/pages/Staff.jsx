@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import axios from 'axios'
 const API = import.meta.env.VITE_API_URL || ''
+const cleanDate = value => value ? String(value).slice(0, 10) : ''
 
 export default function StaffPage({ token }) {
   const [clients, setClients] = useState([])
@@ -36,7 +37,7 @@ export default function StaffPage({ token }) {
   function editReturned(t) {
     setEditingId(t.id)
     setClientId(t.client_id || t.clientId || clientId)
-    setDate(t.date || '')
+    setDate(cleanDate(t.date || t.period_start || t.periodStart))
     setHours(t.hours || 8)
     setNotes(t.notes || '')
   }
@@ -67,7 +68,7 @@ export default function StaffPage({ token }) {
           {clients.map(c=> <option key={c.id} value={c.id}>{c.name} ({c.email})</option>)}
         </select>
       )}
-      <input placeholder="date" value={date} onChange={e=>setDate(e.target.value)} />
+      <input type="date" placeholder="date" value={date} onChange={e=>setDate(e.target.value)} />
       <input placeholder="hours" value={hours} onChange={e=>setHours(e.target.value)} />
       <textarea placeholder="notes" value={notes} onChange={e=>setNotes(e.target.value)} />
       <button onClick={submit}>{editingId ? 'Update and resubmit' : 'Submit'}</button>
@@ -80,7 +81,7 @@ export default function StaffPage({ token }) {
         <ul>
           {history.map(t => (
             <li key={t.id}>
-              {t.date} - {t.hours}h - {t.status} - {t.notes}
+              {cleanDate(t.date)} - {t.hours}h - {t.status} - {t.notes}
               {t.return_reason && <div><strong>Return reason:</strong> {t.return_reason}</div>}
               {t.status === 'returned' && <button onClick={()=>editReturned(t)}>Edit and resubmit</button>}
             </li>

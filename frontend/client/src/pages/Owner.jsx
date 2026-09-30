@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import axios from 'axios'
 const API = import.meta.env.VITE_API_URL || ''
+const cleanDate = value => value ? String(value).slice(0, 10) : ''
 export default function OwnerPage({ token }) {
   const [users, setUsers] = useState([])
   const [times, setTimes] = useState([])
@@ -154,7 +155,7 @@ export default function OwnerPage({ token }) {
               <ul>
                 {grouped[staffId].map(t => (
                   <li key={t.id}>
-                    {t.date} - {t.hours}h - {t.status} - {t.notes} - Client: {userMap[t.client_id] ? userMap[t.client_id].name : t.client_id}
+                    {cleanDate(t.date)} - {t.hours}h - {t.status} - {t.notes} - Client: {userMap[t.client_id] ? userMap[t.client_id].name : t.client_id}
                     {t.return_reason && <div><strong>Return reason:</strong> {t.return_reason}</div>}
                     <button onClick={()=>{ if (confirm('Delete this timesheet?')) axios.delete(`${API}/api/timesheets/${t.id}`, { headers: { Authorization: `Bearer ${token}` } }).then(()=>loadTimes(viewMode)).catch(()=>alert('Failed')) }}>Delete</button>
                   </li>
@@ -184,7 +185,7 @@ export default function OwnerPage({ token }) {
             <ul>
               {invoices.map(i => (
                 <li key={i.id}>
-                  {i.invoice_number} - {i.client_name || i.client_id} - {i.period_start} to {i.period_end} - {i.total_hours}h - £{Number(i.total_amount).toFixed(2)} - {i.status}
+                  {i.invoice_number} - {i.client_name || i.client_id} - {cleanDate(i.period_start)} to {cleanDate(i.period_end)} - {i.total_hours}h - £{Number(i.total_amount).toFixed(2)} - {i.status}
                 </li>
               ))}
             </ul>
