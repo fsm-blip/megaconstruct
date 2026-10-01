@@ -18,8 +18,20 @@ function endOfMonth(isoDate) {
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).toISOString().slice(0, 10)
 }
 
+function Modal({ title, onClose, children, wide = false }) {
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className={`modal-card ${wide ? 'wide' : ''}`} onClick={e=>e.stopPropagation()}>
+        <div className="section-heading"><h3>{title}</h3><button className="secondary" onClick={onClose}>Close</button></div>
+        {children}
+      </div>
+    </div>
+  )
+}
+
 export default function OwnerPage({ token }) {
   const [activeTab, setActiveTab] = useState('summary')
+  const [peopleTab, setPeopleTab] = useState('clients')
   const [users, setUsers] = useState([])
   const [times, setTimes] = useState([])
   const [clients, setClients] = useState([])
@@ -41,14 +53,15 @@ export default function OwnerPage({ token }) {
   const [invoicePreview, setInvoicePreview] = useState(null)
   const [selectedInvoice, setSelectedInvoice] = useState(null)
   const [summary, setSummary] = useState(null)
+  const [showCreateUser, setShowCreateUser] = useState(false)
+  const [showGenerateInvoice, setShowGenerateInvoice] = useState(false)
+  const [showInvoiceDetail, setShowInvoiceDetail] = useState(false)
 
-  useEffect(()=>{ if (token) { refreshAll() } }, [token])
+  useEffect(()=>{ if (token) refreshAll() }, [token])
 
   function headers() { return { Authorization: `Bearer ${token}` } }
   function refreshAll() { loadUsers(); loadClients(); loadSummary(); loadTimes(viewMode); loadInvoices() }
-  function invoicePayload() {
-    return { clientId: invoiceClientId, periodType: invoicePeriodType, periodStart: invoiceStart, periodEnd: invoiceEnd, hourlyRate: Number(invoiceRate), overtimeWeekRate: Number(overtimeWeekRate || 0), overtimeWeekendRate: Number(overtimeWeekendRate || 0), overtimeBankHolidayRate: Number(overtimeBankHolidayRate || 0) }
-  }
+  function invoicePayload() { return { clientId: invoiceClientId, periodType: invoicePeriodType, periodStart: invoiceStart, periodEnd: invoiceEnd, hourlyRate: Number(invoiceRate), overtimeWeekRate: Number(overtimeWeekRate || 0), overtimeWeekendRate: Number(overtimeWeekendRate || 0), overtimeBankHolidayRate: Number(overtimeBankHolidayRate || 0) } }
   function setPeriodType(value) { setInvoicePeriodType(value); if (invoiceStart) setInvoiceEnd(value === 'monthly' ? endOfMonth(invoiceStart) : addDays(invoiceStart, 6)); setInvoicePreview(null) }
   function setPeriodStart(value) { setInvoiceStart(value); setInvoiceEnd(value ? (invoicePeriodType === 'monthly' ? endOfMonth(value) : addDays(value, 6)) : ''); setInvoicePreview(null) }
 
@@ -72,7 +85,7 @@ export default function OwnerPage({ token }) {
       if (role === 'staff' && assignClient) payload.clientId = assignClient
       await axios.post(`${API}/api/users`, payload, { headers: headers() })
       alert('User created (invitation sent)')
-      setName(''); setEmail(''); setPassword(''); setRole('staff')
+      setName(''); setEmail(''); setPassword(''); setRole('staff'); setShowCreateUser(false)
       loadUsers(); loadClients(); loadSummary()
     } catch (e) { console.error('createUser', e); alert(e.response?.data?.error || 'Create failed') }
   }
@@ -88,11 +101,11 @@ export default function OwnerPage({ token }) {
     try {
       const r = await axios.post(`${API}/api/invoices/generate`, invoicePayload(), { headers: headers() })
       alert('Draft invoice generated')
-      setInvoicePreview(null); setSelectedInvoice(r.data)
+      setInvoicePreview(null); setSelectedInvoice(r.data); setShowGenerateInvoice(false); setShowInvoiceDetail(true)
       loadInvoices(); loadTimes(viewMode); loadSummary()
     } catch (e) { console.error('generateInvoice', e); alert(e.response?.data?.error || 'Invoice generation failed') }
   }
-  async function viewInvoice(id) { try { const r = await axios.get(`${API}/api/invoices/${id}`, { headers: headers() }); setSelectedInvoice(r.data) } catch (e) { console.error('viewInvoice', e); alert('Failed loading invoice detail') } }
+  async function viewInvoice(id) { try { const r = await axios.get(`${API}/api/invoices/${id}`, { headers: headers() }); setSelectedInvoice(r.data); setShowInvoiceDetail(true) } catch (e) { console.error('viewInvoice', e); alert('Failed loading invoice detail') } }
 
   async function deleteUser(id) {
     if (!confirm('Delete this user?')) return
@@ -105,96 +118,84 @@ export default function OwnerPage({ token }) {
       console.error('deleteUser', e); alert(e.response?.data?.error || 'Delete failed')
     }
   }
+  async function deleteTimesheet(id) { if (!confirm('Delete this timesheet?')) return; try { await axios.delete(`${API}/api/timesheets/${id}`, { headers: headers() }); loadTimes(viewMode); loadSummary() } catch (e) { alert(e.response?.data?.error || 'Failed') } }
 
-  async function deleteTimesheet(id) {
-    if (!confirm('Delete this timesheet?')) return
-    try { await axios.delete(`${API}/api/timesheets/${id}`, { headers: headers() }); loadTimes(viewMode); loadSummary() } catch (e) { alert(e.response?.data?.error || 'Failed') }
-  }
-
+  const ownerUsers = users.filter(u => u.role === 'owner')
+  const staffUsers = users.filter(u => u.role === 'staff')
+  const clientUsers = users.filter(u => u.role === 'client')
+  const manageableUsers = users.filter(u => u.role !== 'owner')
   const userMap = users.reduce((acc, u) => { acc[u.id] = u; return acc }, {})
+  const staffByClient = clientUsers.reduce((acc, c) => { acc[c.id] = staffUsers.filter(s => s.client_id === c.id); return acc }, {})
+  const unassignedStaff = staffUsers.filter(s => !s.client_id || !userMap[s.client_id])
   const grouped = times.reduce((acc, t) => { acc[t.staff_id] = acc[t.staff_id] || []; acc[t.staff_id].push(t); return acc }, {})
   const previewLines = invoicePreview?.lines || []
   const detailLines = selectedInvoice?.lines || []
   const summaryValue = (group, key, field = 'count') => Number((summary?.[group] || []).find(r => r.status === key || r.role === key)?.[field] || 0)
-  const totalUsers = (summary?.users || []).reduce((sum, r) => sum + Number(r.count || 0), 0)
+  const managedUserCount = manageableUsers.length
   const totalInvoiceAmount = (summary?.invoices || []).reduce((sum, r) => sum + Number(r.amount || 0), 0)
   const otText = t => `${n(t.overtime_week_hours || t.overtimeWeekHours)}h weekday OT, ${n(t.overtime_weekend_hours || t.overtimeWeekendHours)}h weekend OT, ${n(t.overtime_bank_holiday_hours || t.overtimeBankHolidayHours)}h bank holiday OT`
   const lineText = l => `${cleanDate(l.work_date)} - ${l.staff_name || l.staff_id} - ${n(l.hours)}h x ${gbp(l.hourly_rate)} + OT ${n(l.overtime_week_hours)}h/${gbp(l.overtime_week_rate)}, ${n(l.overtime_weekend_hours)}h/${gbp(l.overtime_weekend_rate)}, ${n(l.overtime_bank_holiday_hours)}h/${gbp(l.overtime_bank_holiday_rate)} = ${gbp(l.line_amount)}`
 
+  const createUserForm = (
+    <div className="form-grid single">
+      <input placeholder="name" value={name} onChange={e=>setName(e.target.value)} />
+      <input placeholder="email" value={email} onChange={e=>setEmail(e.target.value)} />
+      <input placeholder="password" value={password} onChange={e=>setPassword(e.target.value)} />
+      <select value={role} onChange={e=>setRole(e.target.value)}><option value="staff">staff</option><option value="client">client</option></select>
+      {role === 'staff' && <label>Assign client<select value={assignClient} onChange={e=>setAssignClient(e.target.value)}>{clients.map(c=> <option key={c.id} value={c.id}>{c.name} ({c.email})</option>)}</select></label>}
+      <button onClick={createUser}>Create</button>
+    </div>
+  )
+
+  const invoiceGenerator = (
+    <div className="form-grid single">
+      <select value={invoiceClientId} onChange={e=>{ setInvoiceClientId(e.target.value); setInvoicePreview(null) }}><option value="">Select client</option>{clients.map(c=> <option key={c.id} value={c.id}>{c.name} ({c.email})</option>)}</select>
+      <select value={invoicePeriodType} onChange={e=>setPeriodType(e.target.value)}><option value="weekly">Weekly</option><option value="monthly">Monthly</option></select>
+      <label>Period start<input type="date" value={invoiceStart} onChange={e=>setPeriodStart(e.target.value)} /></label>
+      <label>Period end<input type="date" value={invoiceEnd} onChange={e=>{ setInvoiceEnd(e.target.value); setInvoicePreview(null) }} /></label>
+      <input placeholder="standard hourly rate" value={invoiceRate} onChange={e=>{ setInvoiceRate(e.target.value); setInvoicePreview(null) }} />
+      <input placeholder="overtime weekday hourly rate" value={overtimeWeekRate} onChange={e=>{ setOvertimeWeekRate(e.target.value); setInvoicePreview(null) }} />
+      <input placeholder="overtime weekend hourly rate" value={overtimeWeekendRate} onChange={e=>{ setOvertimeWeekendRate(e.target.value); setInvoicePreview(null) }} />
+      <input placeholder="overtime bank holiday hourly rate" value={overtimeBankHolidayRate} onChange={e=>{ setOvertimeBankHolidayRate(e.target.value); setInvoicePreview(null) }} />
+      <div className="button-row"><button onClick={previewInvoice}>Preview invoice</button><button onClick={generateInvoice}>Generate draft invoice</button></div>
+      {invoicePreview && <div className="inline-panel"><h5>Invoice preview</h5>{invoicePreview.count === 0 ? <p>{invoicePreview.message || 'No approved uninvoiced timesheets found.'}</p> : <><p>{invoicePreview.count} line(s), {n(invoicePreview.totalHours)}h standard, {n(invoicePreview.totalOvertimeWeekHours)}h weekday OT, {n(invoicePreview.totalOvertimeWeekendHours)}h weekend OT, {n(invoicePreview.totalOvertimeBankHolidayHours)}h bank holiday OT, {gbp(invoicePreview.totalAmount)}</p><ul className="record-list compact-list">{previewLines.map(l => <li key={l.timesheet_id}>{lineText(l)}</li>)}</ul></>}</div>}
+    </div>
+  )
+
+  const invoiceDetail = selectedInvoice && (
+    <div className="inline-panel flat"><p><strong>{selectedInvoice.invoice_number}</strong> — {cleanDate(selectedInvoice.period_start)} to {cleanDate(selectedInvoice.period_end)} — {n(selectedInvoice.total_hours)}h — {gbp(selectedInvoice.total_amount)} — {selectedInvoice.status}</p>{detailLines.length > 0 ? <ul className="record-list compact-list">{detailLines.map(l => <li key={l.id || l.timesheet_id}>{lineText(l)} {l.notes ? `— ${l.notes}` : ''}</li>)}</ul> : <p>No invoice line detail stored for this invoice.</p>}</div>
+  )
+
   return (
     <div className="panel-card owner-console">
-      <div className="section-heading">
-        <div><h3>Owner Console</h3><p>Oversight, users, timesheets, and invoice operations.</p></div>
-        <button className="secondary" onClick={refreshAll}>Refresh all</button>
-      </div>
-      <div className="tabs">
-        {['summary','users','timesheets','invoices'].map(tab => <button key={tab} className={activeTab === tab ? 'active' : 'secondary'} onClick={()=>setActiveTab(tab)}>{tab[0].toUpperCase()+tab.slice(1)}</button>)}
-      </div>
+      <div className="section-heading"><div><h3>Owner Console</h3><p>Oversight, users, timesheets, and invoice operations.</p></div><button className="secondary" onClick={refreshAll}>Refresh all</button></div>
+      <div className="tabs">{['summary','users','timesheets','invoices'].map(tab => <button key={tab} className={activeTab === tab ? 'active' : 'secondary'} onClick={()=>setActiveTab(tab)}>{tab[0].toUpperCase()+tab.slice(1)}</button>)}</div>
 
-      {activeTab === 'summary' && summary && (
-        <div className="summary-grid">
-          <div className="metric-card"><span>Pending approval</span><strong>{summaryValue('timesheets', 'submitted')}</strong></div>
-          <div className="metric-card"><span>Returned</span><strong>{summaryValue('timesheets', 'returned')}</strong></div>
-          <div className="metric-card"><span>Approved uninvoiced</span><strong>{summaryValue('timesheets', 'approved')} / {summaryValue('timesheets', 'approved', 'hours')}h</strong></div>
-          <div className="metric-card"><span>Invoiced value</span><strong>{gbp(totalInvoiceAmount)}</strong></div>
-          <div className="metric-card"><span>Users</span><strong>{totalUsers}</strong></div>
-          <div className="metric-card"><span>Staff</span><strong>{summaryValue('users', 'staff')}</strong></div>
-          <div className="metric-card"><span>Clients</span><strong>{summaryValue('users', 'client')}</strong></div>
-          <div className="metric-card"><span>Draft invoices</span><strong>{summaryValue('invoices', 'draft')}</strong></div>
-        </div>
-      )}
+      {activeTab === 'summary' && summary && <div className="summary-grid">
+        <div className="metric-card"><span>Pending approval</span><strong>{summaryValue('timesheets', 'submitted')}</strong></div><div className="metric-card"><span>Returned</span><strong>{summaryValue('timesheets', 'returned')}</strong></div><div className="metric-card"><span>Approved uninvoiced</span><strong>{summaryValue('timesheets', 'approved')} / {summaryValue('timesheets', 'approved', 'hours')}h</strong></div><div className="metric-card"><span>Invoiced value</span><strong>{gbp(totalInvoiceAmount)}</strong></div><div className="metric-card"><span>Managed users</span><strong>{managedUserCount}</strong></div><div className="metric-card"><span>Staff</span><strong>{staffUsers.length}</strong></div><div className="metric-card"><span>Clients</span><strong>{clientUsers.length}</strong></div><div className="metric-card"><span>Draft invoices</span><strong>{summaryValue('invoices', 'draft')}</strong></div>
+      </div>}
 
-      {activeTab === 'users' && (
-        <div className="two-column">
-          <section>
-            <h4>Create user</h4>
-            <div className="form-grid single">
-              <input placeholder="name" value={name} onChange={e=>setName(e.target.value)} />
-              <input placeholder="email" value={email} onChange={e=>setEmail(e.target.value)} />
-              <input placeholder="password" value={password} onChange={e=>setPassword(e.target.value)} />
-              <select value={role} onChange={e=>setRole(e.target.value)}><option value="staff">staff</option><option value="client">client</option></select>
-              {role === 'staff' && <label>Assign client<select value={assignClient} onChange={e=>setAssignClient(e.target.value)}>{clients.map(c=> <option key={c.id} value={c.id}>{c.name} ({c.email})</option>)}</select></label>}
-              <button onClick={createUser}>Create</button>
-            </div>
-          </section>
-          <section>
-            <div className="section-heading"><h4>Users</h4><button className="secondary" onClick={loadUsers}>Refresh users</button></div>
-            <ul className="record-list">{users.map(u => <li key={u.id}><strong>{u.name}</strong> ({u.email}) — {u.role} {u.client_id ? `— assigned client ${userMap[u.client_id]?.name || u.client_id}` : ''}<button onClick={()=>deleteUser(u.id)}>Delete</button></li>)}</ul>
-          </section>
-        </div>
-      )}
+      {activeTab === 'users' && <section>
+        <div className="section-heading"><div><h4>People</h4><p>Owners are kept out of operational user management. Clients and staff show their assignments.</p></div><div className="button-row"><button onClick={()=>setShowCreateUser(true)}>Create user</button><button className="secondary" onClick={loadUsers}>Refresh users</button></div></div>
+        {ownerUsers.length > 0 && <p className="notice">Owner account is excluded from the operational lists: {ownerUsers.map(o => o.email).join(', ')}</p>}
+        <div className="tabs compact-tabs"><button className={peopleTab === 'clients' ? 'active' : 'secondary'} onClick={()=>setPeopleTab('clients')}>Clients</button><button className={peopleTab === 'staff' ? 'active' : 'secondary'} onClick={()=>setPeopleTab('staff')}>Staff</button></div>
+        {peopleTab === 'clients' && <ul className="record-list">{clientUsers.map(c => <li key={c.id}><strong>{c.name}</strong> ({c.email}) — {staffByClient[c.id]?.length || 0} assigned staff{staffByClient[c.id]?.length > 0 && <div className="chips">{staffByClient[c.id].map(s => <span key={s.id}>{s.name} ({s.email})</span>)}</div>}<button onClick={()=>deleteUser(c.id)}>Delete client</button></li>)}</ul>}
+        {peopleTab === 'staff' && <ul className="record-list">{staffUsers.map(s => <li key={s.id}><strong>{s.name}</strong> ({s.email}) — assigned client: {userMap[s.client_id]?.name || 'Unassigned'}{!userMap[s.client_id] && <span className="badge danger-badge">needs assignment</span>}<button onClick={()=>deleteUser(s.id)}>Delete staff</button></li>)}{unassignedStaff.length === 0 && staffUsers.length === 0 && <li>No staff users.</li>}</ul>}
+      </section>}
 
-      {activeTab === 'timesheets' && (
-        <section>
-          <div className="section-heading"><div><h4>Timesheets</h4><p>Review pending or approved-uninvoiced rows. Invoiced rows are locked to invoices.</p></div><div className="button-row"><button onClick={()=>{ setViewMode('pending'); loadTimes('pending') }}>Load pending</button><button className="secondary" onClick={()=>{ setViewMode('approved'); loadTimes('approved') }}>Load approved uninvoiced</button><button className="danger" onClick={()=>{ if (confirm('Delete ALL timesheets? This is permanent.')) { axios.delete(`${API}/api/timesheets`, { headers: headers() }).then(()=>{ loadTimes(viewMode); loadSummary() }).catch(()=>alert('Failed')) } }}>Delete all timesheets</button></div></div>
-          {Object.keys(grouped).length === 0 ? <p>No timesheets</p> : Object.keys(grouped).map(staffId => <div key={staffId} className="group-block"><h5>Staff: {userMap[staffId]?.name || staffId}</h5><ul className="record-list">{grouped[staffId].map(t => <li key={t.id}><strong>{cleanDate(t.date)}</strong> — {n(t.hours)}h standard — {otText(t)} — {t.status} — Client: {userMap[t.client_id]?.name || t.client_id}<div>{t.notes}</div>{t.return_reason && <div><strong>Return reason:</strong> {t.return_reason}</div>}<button onClick={()=>deleteTimesheet(t.id)}>Delete</button></li>)}</ul></div>)}
-        </section>
-      )}
+      {activeTab === 'timesheets' && <section>
+        <div className="section-heading"><div><h4>Timesheets</h4><p>Review pending or approved-uninvoiced rows. Invoiced rows are locked to invoices.</p></div><div className="button-row"><button onClick={()=>{ setViewMode('pending'); loadTimes('pending') }}>Load pending</button><button className="secondary" onClick={()=>{ setViewMode('approved'); loadTimes('approved') }}>Load approved uninvoiced</button><button className="danger" onClick={()=>{ if (confirm('Delete ALL timesheets? This is permanent.')) { axios.delete(`${API}/api/timesheets`, { headers: headers() }).then(()=>{ loadTimes(viewMode); loadSummary() }).catch(()=>alert('Failed')) } }}>Delete all timesheets</button></div></div>
+        {Object.keys(grouped).length === 0 ? <p>No timesheets</p> : Object.keys(grouped).map(staffId => <div key={staffId} className="group-block"><h5>Staff: {userMap[staffId]?.name || staffId}</h5><ul className="record-list">{grouped[staffId].map(t => <li key={t.id}><strong>{cleanDate(t.date)}</strong> — {n(t.hours)}h standard — {otText(t)} — {t.status} — Client: {userMap[t.client_id]?.name || t.client_id}<div>{t.notes}</div>{t.return_reason && <div><strong>Return reason:</strong> {t.return_reason}</div>}<button onClick={()=>deleteTimesheet(t.id)}>Delete</button></li>)}</ul></div>)}
+      </section>}
 
-      {activeTab === 'invoices' && (
-        <div className="two-column invoices-layout">
-          <section>
-            <h4>Generate draft invoice</h4>
-            <div className="form-grid single">
-              <select value={invoiceClientId} onChange={e=>{ setInvoiceClientId(e.target.value); setInvoicePreview(null) }}><option value="">Select client</option>{clients.map(c=> <option key={c.id} value={c.id}>{c.name} ({c.email})</option>)}</select>
-              <select value={invoicePeriodType} onChange={e=>setPeriodType(e.target.value)}><option value="weekly">Weekly</option><option value="monthly">Monthly</option></select>
-              <label>Period start<input type="date" value={invoiceStart} onChange={e=>setPeriodStart(e.target.value)} /></label>
-              <label>Period end<input type="date" value={invoiceEnd} onChange={e=>{ setInvoiceEnd(e.target.value); setInvoicePreview(null) }} /></label>
-              <input placeholder="standard hourly rate" value={invoiceRate} onChange={e=>{ setInvoiceRate(e.target.value); setInvoicePreview(null) }} />
-              <input placeholder="overtime weekday hourly rate" value={overtimeWeekRate} onChange={e=>{ setOvertimeWeekRate(e.target.value); setInvoicePreview(null) }} />
-              <input placeholder="overtime weekend hourly rate" value={overtimeWeekendRate} onChange={e=>{ setOvertimeWeekendRate(e.target.value); setInvoicePreview(null) }} />
-              <input placeholder="overtime bank holiday hourly rate" value={overtimeBankHolidayRate} onChange={e=>{ setOvertimeBankHolidayRate(e.target.value); setInvoicePreview(null) }} />
-              <button onClick={previewInvoice}>Preview invoice</button><button onClick={generateInvoice}>Generate draft invoice</button><button className="secondary" onClick={loadInvoices}>Refresh invoices</button>
-            </div>
-            {invoicePreview && <div className="inline-panel"><h5>Invoice preview</h5>{invoicePreview.count === 0 ? <p>{invoicePreview.message || 'No approved uninvoiced timesheets found.'}</p> : <><p>{invoicePreview.count} line(s), {n(invoicePreview.totalHours)}h standard, {n(invoicePreview.totalOvertimeWeekHours)}h weekday OT, {n(invoicePreview.totalOvertimeWeekendHours)}h weekend OT, {n(invoicePreview.totalOvertimeBankHolidayHours)}h bank holiday OT, {gbp(invoicePreview.totalAmount)}</p><ul className="record-list compact-list">{previewLines.map(l => <li key={l.timesheet_id}>{lineText(l)}</li>)}</ul></>}</div>}
-          </section>
-          <section>
-            <h4>Invoices</h4>
-            {invoices.length === 0 ? <p>No invoices yet</p> : <ul className="record-list">{invoices.map(i => <li key={i.id}><strong>{i.invoice_number}</strong> — {i.client_name || i.client_id} — {cleanDate(i.period_start)} to {cleanDate(i.period_end)} — {n(i.total_hours)}h — {gbp(i.total_amount)} — {i.status}<button onClick={()=>viewInvoice(i.id)}>View</button></li>)}</ul>}
-            {selectedInvoice && <div className="inline-panel"><h5>Invoice detail</h5><p>{selectedInvoice.invoice_number} — {cleanDate(selectedInvoice.period_start)} to {cleanDate(selectedInvoice.period_end)} — {n(selectedInvoice.total_hours)}h — {gbp(selectedInvoice.total_amount)} — {selectedInvoice.status}</p>{detailLines.length > 0 ? <ul className="record-list compact-list">{detailLines.map(l => <li key={l.id || l.timesheet_id}>{lineText(l)} {l.notes ? `— ${l.notes}` : ''}</li>)}</ul> : <p>No invoice line detail stored for this invoice.</p>}</div>}
-          </section>
-        </div>
-      )}
+      {activeTab === 'invoices' && <section>
+        <div className="section-heading"><div><h4>Invoices</h4><p>Invoice generation and invoice detail open in modal pages to keep this tab clean.</p></div><div className="button-row"><button onClick={()=>setShowGenerateInvoice(true)}>Generate draft invoice</button><button className="secondary" onClick={loadInvoices}>Refresh invoices</button></div></div>
+        {invoices.length === 0 ? <p>No invoices yet</p> : <ul className="record-list">{invoices.map(i => <li key={i.id}><strong>{i.invoice_number}</strong> — {i.client_name || i.client_id} — {cleanDate(i.period_start)} to {cleanDate(i.period_end)} — {n(i.total_hours)}h — {gbp(i.total_amount)} — {i.status}<button onClick={()=>viewInvoice(i.id)}>View detail</button></li>)}</ul>}
+      </section>}
+
+      {showCreateUser && <Modal title="Create user" onClose={()=>setShowCreateUser(false)}>{createUserForm}</Modal>}
+      {showGenerateInvoice && <Modal title="Generate draft invoice" onClose={()=>setShowGenerateInvoice(false)} wide>{invoiceGenerator}</Modal>}
+      {showInvoiceDetail && selectedInvoice && <Modal title="Invoice detail" onClose={()=>setShowInvoiceDetail(false)} wide>{invoiceDetail}</Modal>}
     </div>
   )
 }

@@ -105,3 +105,39 @@ button:disabled { background: #e5e7eb; color: #64748b; cursor: not-allowed; box-
   .two-column, .invoices-layout, .form-grid { grid-template-columns: 1fr; }
   .section-heading { flex-direction: column; }
 }
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 48px 18px;
+  background: rgba(15, 23, 42, .48);
+  backdrop-filter: blur(6px);
+  overflow: auto;
+}
+.modal-card {
+  width: min(720px, 100%);
+  background: white;
+  border: 1px solid #dbe6f4;
+  border-radius: 22px;
+  padding: 24px;
+  box-shadow: 0 28px 80px rgba(15, 23, 42, .28);
+}
+.modal-card.wide { width: min(980px, 100%); }
+.compact-tabs { margin-top: 8px; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.chips span, .badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 6px 10px;
+  background: #eaf1fb;
+  color: #1e3a8a;
+  font-size: 13px;
+  font-weight: 800;
+}
+.danger-badge { background: #fee2e2; color: #991b1b; margin-left: 8px; }
+.inline-panel.flat { box-shadow: none; background: transparent; border: 0; padding: 0; }
