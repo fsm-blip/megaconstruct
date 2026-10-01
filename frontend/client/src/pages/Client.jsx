@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react'
 import axios from 'axios'
 const API = import.meta.env.VITE_API_URL || ''
 const cleanDate = value => value ? String(value).slice(0, 10) : ''
+const h = value => Number(value || 0)
 
 export default function ClientPage({ token }) {
   const [list, setList] = useState([])
@@ -56,17 +57,25 @@ export default function ClientPage({ token }) {
     return t.staff_name || staffMap[sid] || staffMap[Number(sid)] || sid || 'unknown'
   }
 
+  function timeSummary(t) {
+    return `${h(t.hours)}h standard, ${h(t.overtime_week_hours || t.overtimeWeekHours)}h OT weekday, ${h(t.overtime_weekend_hours || t.overtimeWeekendHours)}h OT weekend, ${h(t.overtime_bank_holiday_hours || t.overtimeBankHolidayHours)}h OT bank holiday`
+  }
+
   return (
-    <div className="card">
-      <h3>Client (React): Pending approvals</h3>
-      <button onClick={()=>{ load(); loadHistory() }}>Refresh</button>
+    <div className="panel-card">
+      <div className="section-heading">
+        <div>
+          <h3>Client approvals</h3>
+          <p>Approve or return submitted staff timesheets.</p>
+        </div>
+        <button className="secondary" onClick={()=>{ load(); loadHistory() }}>Refresh</button>
+      </div>
       {list.length === 0 ? <p>No pending timesheets</p> : (
-        <ul>
+        <ul className="record-list">
           {list.map(t=> (
             <li key={t.id}>
-              {cleanDate(t.date)} - {t.hours}h by {staffName(t)} - {t.notes}
-              <button onClick={()=>approve(t.id)} style={{marginLeft:8}}>Approve</button>
-              <button onClick={()=>returnTimesheet(t.id)} style={{marginLeft:8}}>Return</button>
+              <strong>{cleanDate(t.date)}</strong> — {timeSummary(t)} by {staffName(t)} — {t.notes}
+              <div className="button-row compact"><button onClick={()=>approve(t.id)}>Approve</button><button className="secondary" onClick={()=>returnTimesheet(t.id)}>Return</button></div>
             </li>
           ))}
         </ul>
@@ -75,10 +84,10 @@ export default function ClientPage({ token }) {
       <hr />
       <h4>Reviewed timesheets</h4>
       {history.length === 0 ? <p>No reviewed timesheets</p> : (
-        <ul>
+        <ul className="record-list">
           {history.map(t => (
             <li key={t.id}>
-              {cleanDate(t.date)} - {t.hours}h by {staffName(t)} - {t.status}
+              <strong>{cleanDate(t.date)}</strong> — {timeSummary(t)} by {staffName(t)} — {t.status}
               {t.return_reason && <div><strong>Return reason:</strong> {t.return_reason}</div>}
             </li>
           ))}

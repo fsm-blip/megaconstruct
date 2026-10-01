@@ -1,5 +1,107 @@
-body { font-family: Arial, sans-serif; padding: 20px; }
-.app { max-width: 800px; margin: 0 auto; }
-.card { border: 1px solid #ddd; padding: 10px; margin: 10px 0; }
-input, textarea, select { display: block; margin: 8px 0; padding: 8px; width: 100%; box-sizing: border-box; }
-button { padding: 8px 12px; }
+:root {
+  color: #172033;
+  background: #eef2f7;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; min-height: 100vh; background: linear-gradient(135deg, #eef2f7 0%, #f8fafc 55%, #e8f3ff 100%); }
+button, input, textarea, select { font: inherit; }
+.app { max-width: 1180px; margin: 0 auto; padding: 28px; }
+
+.card, .panel-card {
+  background: rgba(255,255,255,.94);
+  border: 1px solid #dce5f2;
+  border-radius: 18px;
+  box-shadow: 0 18px 45px rgba(24, 39, 75, .08);
+  padding: 24px;
+  margin: 14px 0;
+}
+
+h1, h2, h3, h4, h5 { margin: 0 0 10px; color: #0f172a; letter-spacing: -0.02em; }
+p { color: #526071; line-height: 1.4; }
+hr { border: 0; border-top: 1px solid #e4ebf5; margin: 22px 0; }
+
+.site-header {
+  background: rgba(255,255,255,.78);
+  backdrop-filter: blur(12px);
+  border: 1px solid #dce5f2;
+  border-radius: 18px;
+  padding: 16px 18px;
+}
+.top-links a { color: #2563eb; font-weight: 700; text-decoration: none; }
+.top-links a:hover { color: #1d4ed8; }
+
+input, textarea, select {
+  width: 100%;
+  min-height: 44px;
+  display: block;
+  margin: 7px 0 12px;
+  padding: 10px 12px;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  background: #fff;
+  color: #172033;
+}
+textarea { min-height: 92px; resize: vertical; }
+label { display: block; color: #334155; font-weight: 700; font-size: 14px; }
+
+button {
+  border: 0;
+  border-radius: 10px;
+  padding: 10px 14px;
+  background: #2563eb;
+  color: white;
+  font-weight: 800;
+  cursor: pointer;
+  box-shadow: 0 8px 18px rgba(37, 99, 235, .22);
+}
+button:hover { background: #1d4ed8; }
+button.secondary { background: #eaf1fb; color: #1e3a8a; box-shadow: none; }
+button.secondary:hover { background: #dceafe; }
+button.danger { background: #fee2e2; color: #991b1b; box-shadow: none; }
+button.danger:hover { background: #fecaca; }
+button:disabled { background: #e5e7eb; color: #64748b; cursor: not-allowed; box-shadow: none; }
+
+.section-heading { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; margin-bottom: 18px; }
+.button-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.button-row.compact { margin-top: 10px; }
+.form-grid { display: grid; grid-template-columns: repeat(2, minmax(160px, 1fr)); gap: 12px 16px; }
+.form-grid.single { grid-template-columns: 1fr; }
+.span-2 { grid-column: 1 / -1; }
+.two-column { display: grid; grid-template-columns: minmax(260px, .8fr) minmax(320px, 1.2fr); gap: 28px; align-items: start; }
+.invoices-layout { grid-template-columns: minmax(300px, .85fr) minmax(380px, 1.15fr); }
+
+.tabs { display: flex; flex-wrap: wrap; gap: 10px; margin: 12px 0 22px; }
+.tabs button.active { background: #0f172a; color: white; }
+
+.summary-grid { display: grid; grid-template-columns: repeat(4, minmax(150px, 1fr)); gap: 14px; }
+.metric-card {
+  background: linear-gradient(180deg, #ffffff, #f8fbff);
+  border: 1px solid #dce5f2;
+  border-radius: 16px;
+  padding: 18px;
+}
+.metric-card span { display: block; color: #64748b; font-weight: 800; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; }
+.metric-card strong { display: block; margin-top: 8px; font-size: 28px; color: #0f172a; }
+
+.record-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.record-list li, .group-block, .inline-panel {
+  border: 1px solid #e2e8f0;
+  background: #fbfdff;
+  border-radius: 14px;
+  padding: 12px;
+}
+.record-list li button { margin-top: 10px; margin-right: 8px; }
+.compact-list li { font-size: 14px; }
+.notice { border-radius: 12px; padding: 12px; background: #eff6ff; color: #1e3a8a; }
+.notice.danger { background: #fef2f2; color: #991b1b; }
+.owner-console { max-width: none; }
+.cta { font-weight: 800; color: #1d4ed8; }
+
+@media (max-width: 900px) {
+  .app { padding: 16px; }
+  .summary-grid { grid-template-columns: repeat(2, minmax(130px, 1fr)); }
+  .two-column, .invoices-layout, .form-grid { grid-template-columns: 1fr; }
+  .section-heading { flex-direction: column; }
+}

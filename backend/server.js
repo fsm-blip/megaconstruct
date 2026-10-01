@@ -69,6 +69,9 @@ async function initDb() {
         client_id TEXT,
         date TEXT,
         hours REAL,
+        overtime_week_hours REAL DEFAULT 0,
+        overtime_weekend_hours REAL DEFAULT 0,
+        overtime_bank_holiday_hours REAL DEFAULT 0,
         notes TEXT,
         status TEXT,
         created_at TEXT,
@@ -135,6 +138,12 @@ async function initDb() {
         work_date TEXT NOT NULL,
         hours REAL NOT NULL,
         hourly_rate REAL NOT NULL,
+        overtime_week_hours REAL DEFAULT 0,
+        overtime_week_rate REAL DEFAULT 0,
+        overtime_weekend_hours REAL DEFAULT 0,
+        overtime_weekend_rate REAL DEFAULT 0,
+        overtime_bank_holiday_hours REAL DEFAULT 0,
+        overtime_bank_holiday_rate REAL DEFAULT 0,
         line_amount REAL NOT NULL,
         notes TEXT,
         created_at TEXT NOT NULL
@@ -148,6 +157,9 @@ async function initDb() {
     }
     const sqliteTimesheetColumns = [
       ['invoice_id', 'TEXT'],
+      ['overtime_week_hours', 'REAL DEFAULT 0'],
+      ['overtime_weekend_hours', 'REAL DEFAULT 0'],
+      ['overtime_bank_holiday_hours', 'REAL DEFAULT 0'],
       ['period_start', 'TEXT'],
       ['period_end', 'TEXT'],
       ['submitted_at', 'TEXT'],
@@ -162,6 +174,17 @@ async function initDb() {
       } catch (e) {
         // ignore if column exists
       }
+    });
+    const sqliteInvoiceLineColumns = [
+      ['overtime_week_hours', 'REAL DEFAULT 0'],
+      ['overtime_week_rate', 'REAL DEFAULT 0'],
+      ['overtime_weekend_hours', 'REAL DEFAULT 0'],
+      ['overtime_weekend_rate', 'REAL DEFAULT 0'],
+      ['overtime_bank_holiday_hours', 'REAL DEFAULT 0'],
+      ['overtime_bank_holiday_rate', 'REAL DEFAULT 0']
+    ];
+    sqliteInvoiceLineColumns.forEach(([column, type]) => {
+      try { sqliteDb.prepare(`ALTER TABLE invoice_lines ADD COLUMN ${column} ${type}`).run(); } catch (e) {}
     });
     sqliteDb.exec(`
       CREATE INDEX IF NOT EXISTS idx_timesheets_staff_status ON timesheets(staff_id, status);
@@ -189,6 +212,9 @@ async function initDb() {
         client_id text REFERENCES users(id),
         date date,
         hours numeric,
+        overtime_week_hours numeric DEFAULT 0,
+        overtime_weekend_hours numeric DEFAULT 0,
+        overtime_bank_holiday_hours numeric DEFAULT 0,
         notes text,
         status text,
         created_at timestamptz,
@@ -265,6 +291,12 @@ async function initDb() {
         work_date date NOT NULL,
         hours numeric NOT NULL,
         hourly_rate numeric NOT NULL,
+        overtime_week_hours numeric DEFAULT 0,
+        overtime_week_rate numeric DEFAULT 0,
+        overtime_weekend_hours numeric DEFAULT 0,
+        overtime_weekend_rate numeric DEFAULT 0,
+        overtime_bank_holiday_hours numeric DEFAULT 0,
+        overtime_bank_holiday_rate numeric DEFAULT 0,
         line_amount numeric NOT NULL,
         notes text,
         created_at timestamptz NOT NULL
@@ -276,6 +308,9 @@ async function initDb() {
     } catch (e) { /* ignore */ }
     try {
       await pool.query("ALTER TABLE timesheets ADD COLUMN IF NOT EXISTS invoice_id text REFERENCES invoices(id)");
+      await pool.query("ALTER TABLE timesheets ADD COLUMN IF NOT EXISTS overtime_week_hours numeric DEFAULT 0");
+      await pool.query("ALTER TABLE timesheets ADD COLUMN IF NOT EXISTS overtime_weekend_hours numeric DEFAULT 0");
+      await pool.query("ALTER TABLE timesheets ADD COLUMN IF NOT EXISTS overtime_bank_holiday_hours numeric DEFAULT 0");
       await pool.query("ALTER TABLE timesheets ADD COLUMN IF NOT EXISTS period_start date");
       await pool.query("ALTER TABLE timesheets ADD COLUMN IF NOT EXISTS period_end date");
       await pool.query("ALTER TABLE timesheets ADD COLUMN IF NOT EXISTS submitted_at timestamptz");
@@ -283,6 +318,12 @@ async function initDb() {
       await pool.query("ALTER TABLE timesheets ADD COLUMN IF NOT EXISTS return_reason text");
       await pool.query("ALTER TABLE timesheets ADD COLUMN IF NOT EXISTS invoiced_at timestamptz");
       await pool.query("ALTER TABLE timesheets ADD COLUMN IF NOT EXISTS updated_at timestamptz");
+      await pool.query("ALTER TABLE invoice_lines ADD COLUMN IF NOT EXISTS overtime_week_hours numeric DEFAULT 0");
+      await pool.query("ALTER TABLE invoice_lines ADD COLUMN IF NOT EXISTS overtime_week_rate numeric DEFAULT 0");
+      await pool.query("ALTER TABLE invoice_lines ADD COLUMN IF NOT EXISTS overtime_weekend_hours numeric DEFAULT 0");
+      await pool.query("ALTER TABLE invoice_lines ADD COLUMN IF NOT EXISTS overtime_weekend_rate numeric DEFAULT 0");
+      await pool.query("ALTER TABLE invoice_lines ADD COLUMN IF NOT EXISTS overtime_bank_holiday_hours numeric DEFAULT 0");
+      await pool.query("ALTER TABLE invoice_lines ADD COLUMN IF NOT EXISTS overtime_bank_holiday_rate numeric DEFAULT 0");
       await pool.query("CREATE INDEX IF NOT EXISTS idx_timesheets_staff_status ON timesheets(staff_id, status)");
       await pool.query("CREATE INDEX IF NOT EXISTS idx_timesheets_client_status ON timesheets(client_id, status)");
       await pool.query("CREATE INDEX IF NOT EXISTS idx_timesheets_period ON timesheets(period_start, period_end)");
@@ -420,6 +461,27 @@ function toMoney(value) {
   return Math.round((Number(value) || 0) * 100) / 100;
 }
 
+function nonNegativeNumber(value) {
+  const n = Number(value || 0);
+  return Number.isFinite(n) && n >= 0 ? n : NaN;
+}
+
+function overtimeFromBody(body = {}) {
+  return {
+    overtimeWeekHours: nonNegativeNumber(body.overtimeWeekHours ?? body.overtime_week_hours),
+    overtimeWeekendHours: nonNegativeNumber(body.overtimeWeekendHours ?? body.overtime_weekend_hours),
+    overtimeBankHolidayHours: nonNegativeNumber(body.overtimeBankHolidayHours ?? body.overtime_bank_holiday_hours)
+  };
+}
+
+function overtimeFromRow(row = {}) {
+  return {
+    overtimeWeekHours: Number(row.overtime_week_hours || row.overtimeWeekHours || 0),
+    overtimeWeekendHours: Number(row.overtime_weekend_hours || row.overtimeWeekendHours || 0),
+    overtimeBankHolidayHours: Number(row.overtime_bank_holiday_hours || row.overtimeBankHolidayHours || 0)
+  };
+}
+
 function timesheetPeriodForDate(value) {
   const date = normalizeDateOnly(value);
   return { periodStart: date, periodEnd: date };
@@ -431,6 +493,9 @@ function serializeTimesheet(row, entries = []) {
     ...row,
     staffId: row.staff_id,
     clientId: row.client_id,
+    overtimeWeekHours: Number(row.overtime_week_hours || 0),
+    overtimeWeekendHours: Number(row.overtime_weekend_hours || 0),
+    overtimeBankHolidayHours: Number(row.overtime_bank_holiday_hours || 0),
     periodStart: normalizeDateOnly(row.period_start || row.date),
     periodEnd: normalizeDateOnly(row.period_end || row.date),
     submittedAt: row.submitted_at || row.created_at || null,
@@ -565,7 +630,9 @@ app.post('/api/timesheets', authMiddleware, async (req, res) => {
   const { date, hours, clientId, notes } = req.body;
   const workDate = normalizeDateOnly(date);
   const numericHours = Number(hours);
-  if (!workDate || !numericHours || numericHours <= 0 || !clientId) return res.status(400).json({ error: 'Missing or invalid fields' });
+  const overtime = overtimeFromBody(req.body);
+  const totalSubmittedHours = numericHours + overtime.overtimeWeekHours + overtime.overtimeWeekendHours + overtime.overtimeBankHolidayHours;
+  if (!workDate || numericHours < 0 || totalSubmittedHours <= 0 || !clientId || Object.values(overtime).some(Number.isNaN)) return res.status(400).json({ error: 'Missing or invalid fields' });
   if (!req.user.client_id || clientId !== req.user.client_id) return res.status(403).json({ error: 'Staff can only submit timesheets to their assigned client' });
   const id = crypto.randomUUID();
   const createdAt = new Date().toISOString();
@@ -573,8 +640,8 @@ app.post('/api/timesheets', authMiddleware, async (req, res) => {
   try {
     if (useSqlite) {
       const tx = sqliteDb.transaction(() => {
-        sqliteDb.prepare('INSERT INTO timesheets(id,staff_id,client_id,date,hours,notes,status,created_at,period_start,period_end,submitted_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)')
-          .run(id, req.user.id, clientId, workDate, numericHours, notes || '', 'submitted', createdAt, periodStart, periodEnd, createdAt, createdAt);
+        sqliteDb.prepare('INSERT INTO timesheets(id,staff_id,client_id,date,hours,overtime_week_hours,overtime_weekend_hours,overtime_bank_holiday_hours,notes,status,created_at,period_start,period_end,submitted_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+          .run(id, req.user.id, clientId, workDate, numericHours, overtime.overtimeWeekHours, overtime.overtimeWeekendHours, overtime.overtimeBankHolidayHours, notes || '', 'submitted', createdAt, periodStart, periodEnd, createdAt, createdAt);
         sqliteDb.prepare('INSERT INTO timesheet_entries(id,timesheet_id,work_date,hours,break_minutes,notes,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)')
           .run(crypto.randomUUID(), id, workDate, numericHours, 0, notes || '', createdAt, createdAt);
         sqliteDb.prepare('INSERT INTO timesheet_events(id,timesheet_id,actor_id,event_type,from_status,to_status,comment,created_at) VALUES(?,?,?,?,?,?,?,?)')
@@ -583,11 +650,11 @@ app.post('/api/timesheets', authMiddleware, async (req, res) => {
       tx();
       const clientRow = sqliteDb.prepare('SELECT email FROM users WHERE id = ? AND role = ?').get(clientId, 'client');
       if (clientRow && clientRow.email) sendEmail(clientRow.email, 'Timesheet submitted for your approval', `A timesheet (${id}) has been submitted.`).catch(e=>console.error(e));
-      return res.json(serializeTimesheet({ id, staff_id: req.user.id, client_id: clientId, date: workDate, hours: numericHours, notes: notes || '', status: 'submitted', created_at: createdAt, period_start: periodStart, period_end: periodEnd, submitted_at: createdAt, updated_at: createdAt }));
+      return res.json(serializeTimesheet({ id, staff_id: req.user.id, client_id: clientId, date: workDate, hours: numericHours, overtime_week_hours: overtime.overtimeWeekHours, overtime_weekend_hours: overtime.overtimeWeekendHours, overtime_bank_holiday_hours: overtime.overtimeBankHolidayHours, notes: notes || '', status: 'submitted', created_at: createdAt, period_start: periodStart, period_end: periodEnd, submitted_at: createdAt, updated_at: createdAt }));
     }
     await pool.query('BEGIN');
-    await pool.query('INSERT INTO timesheets(id,staff_id,client_id,date,hours,notes,status,created_at,period_start,period_end,submitted_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)',
-      [id, req.user.id, clientId, workDate, numericHours, notes || '', 'submitted', createdAt, periodStart, periodEnd, createdAt, createdAt]);
+    await pool.query('INSERT INTO timesheets(id,staff_id,client_id,date,hours,overtime_week_hours,overtime_weekend_hours,overtime_bank_holiday_hours,notes,status,created_at,period_start,period_end,submitted_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)',
+      [id, req.user.id, clientId, workDate, numericHours, overtime.overtimeWeekHours, overtime.overtimeWeekendHours, overtime.overtimeBankHolidayHours, notes || '', 'submitted', createdAt, periodStart, periodEnd, createdAt, createdAt]);
     await pool.query('INSERT INTO timesheet_entries(id,timesheet_id,work_date,hours,break_minutes,notes,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',
       [crypto.randomUUID(), id, workDate, numericHours, 0, notes || '', createdAt, createdAt]);
     await pool.query('INSERT INTO timesheet_events(id,timesheet_id,actor_id,event_type,from_status,to_status,comment,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',
@@ -595,7 +662,7 @@ app.post('/api/timesheets', authMiddleware, async (req, res) => {
     await pool.query('COMMIT');
     const clientRes = await pool.query('SELECT email FROM users WHERE id=$1 AND role=$2', [clientId, 'client']);
     if (clientRes.rowCount > 0 && clientRes.rows[0].email) sendEmail(clientRes.rows[0].email, 'Timesheet submitted for your approval', `A timesheet (${id}) has been submitted.`).catch(e=>console.error(e));
-    res.json(serializeTimesheet({ id, staff_id: req.user.id, client_id: clientId, date: workDate, hours: numericHours, notes: notes || '', status: 'submitted', created_at: createdAt, period_start: periodStart, period_end: periodEnd, submitted_at: createdAt, updated_at: createdAt }));
+    res.json(serializeTimesheet({ id, staff_id: req.user.id, client_id: clientId, date: workDate, hours: numericHours, overtime_week_hours: overtime.overtimeWeekHours, overtime_weekend_hours: overtime.overtimeWeekendHours, overtime_bank_holiday_hours: overtime.overtimeBankHolidayHours, notes: notes || '', status: 'submitted', created_at: createdAt, period_start: periodStart, period_end: periodEnd, submitted_at: createdAt, updated_at: createdAt }));
   } catch (e) {
     if (!useSqlite) { try { await pool.query('ROLLBACK'); } catch (_) {} }
     console.error(e);
@@ -1086,8 +1153,10 @@ app.patch('/api/timesheets/:id', authMiddleware, async (req, res) => {
   const id = req.params.id;
   const workDate = normalizeDateOnly(req.body.date || req.body.workDate);
   const hours = Number(req.body.hours);
+  const overtime = overtimeFromBody(req.body);
   const notes = req.body.notes || '';
-  if (!workDate || !hours || hours <= 0) return res.status(400).json({ error: 'Missing or invalid fields' });
+  const totalSubmittedHours = hours + overtime.overtimeWeekHours + overtime.overtimeWeekendHours + overtime.overtimeBankHolidayHours;
+  if (!workDate || hours < 0 || totalSubmittedHours <= 0 || Object.values(overtime).some(Number.isNaN)) return res.status(400).json({ error: 'Missing or invalid fields' });
   const now = new Date().toISOString();
   const { periodStart, periodEnd } = timesheetPeriodForDate(workDate);
   try {
@@ -1101,8 +1170,8 @@ app.patch('/api/timesheets/:id', authMiddleware, async (req, res) => {
     if (!['draft', 'returned'].includes(ts.status)) return res.status(400).json({ error: 'Only draft or returned timesheets can be edited' });
     if (useSqlite) {
       const tx = sqliteDb.transaction(() => {
-        sqliteDb.prepare('UPDATE timesheets SET date = ?, hours = ?, notes = ?, period_start = ?, period_end = ?, updated_at = ? WHERE id = ?')
-          .run(workDate, hours, notes, periodStart, periodEnd, now, id);
+        sqliteDb.prepare('UPDATE timesheets SET date = ?, hours = ?, overtime_week_hours = ?, overtime_weekend_hours = ?, overtime_bank_holiday_hours = ?, notes = ?, period_start = ?, period_end = ?, updated_at = ? WHERE id = ?')
+          .run(workDate, hours, overtime.overtimeWeekHours, overtime.overtimeWeekendHours, overtime.overtimeBankHolidayHours, notes, periodStart, periodEnd, now, id);
         const entry = sqliteDb.prepare('SELECT id FROM timesheet_entries WHERE timesheet_id = ? ORDER BY created_at LIMIT 1').get(id);
         if (entry) {
           sqliteDb.prepare('UPDATE timesheet_entries SET work_date = ?, hours = ?, notes = ?, updated_at = ? WHERE id = ?')
@@ -1117,7 +1186,7 @@ app.patch('/api/timesheets/:id', authMiddleware, async (req, res) => {
       return res.json(sqliteDb.prepare('SELECT * FROM timesheets WHERE id = ?').get(id));
     }
     await pool.query('BEGIN');
-    await pool.query('UPDATE timesheets SET date=$1, hours=$2, notes=$3, period_start=$4, period_end=$5, updated_at=$6 WHERE id=$7', [workDate, hours, notes, periodStart, periodEnd, now, id]);
+    await pool.query('UPDATE timesheets SET date=$1, hours=$2, overtime_week_hours=$3, overtime_weekend_hours=$4, overtime_bank_holiday_hours=$5, notes=$6, period_start=$7, period_end=$8, updated_at=$9 WHERE id=$10', [workDate, hours, overtime.overtimeWeekHours, overtime.overtimeWeekendHours, overtime.overtimeBankHolidayHours, notes, periodStart, periodEnd, now, id]);
     const er = await pool.query('SELECT id FROM timesheet_entries WHERE timesheet_id=$1 ORDER BY created_at LIMIT 1', [id]);
     if (er.rowCount > 0) {
       await pool.query('UPDATE timesheet_entries SET work_date=$1, hours=$2, notes=$3, updated_at=$4 WHERE id=$5', [workDate, hours, notes, now, er.rows[0].id]);
@@ -1294,9 +1363,19 @@ app.get('/api/timesheets/:id', authMiddleware, async (req, res) => {
 });
 
 
-function invoiceLineFromTimesheet(row, hourlyRate) {
+function invoiceLineFromTimesheet(row, rates) {
   const hours = Number(row.hours || 0);
-  const rate = Number(hourlyRate || 0);
+  const ot = overtimeFromRow(row);
+  const baseRate = Number(rates.hourlyRate || 0);
+  const overtimeWeekRate = Number(rates.overtimeWeekRate || 0);
+  const overtimeWeekendRate = Number(rates.overtimeWeekendRate || 0);
+  const overtimeBankHolidayRate = Number(rates.overtimeBankHolidayRate || 0);
+  const lineAmount = toMoney(
+    (hours * baseRate) +
+    (ot.overtimeWeekHours * overtimeWeekRate) +
+    (ot.overtimeWeekendHours * overtimeWeekendRate) +
+    (ot.overtimeBankHolidayHours * overtimeBankHolidayRate)
+  );
   return {
     timesheet_id: row.id,
     staff_id: row.staff_id,
@@ -1304,17 +1383,26 @@ function invoiceLineFromTimesheet(row, hourlyRate) {
     staff_email: row.staff_email || null,
     work_date: normalizeDateOnly(row.date || row.period_start),
     hours,
-    hourly_rate: rate,
-    line_amount: toMoney(hours * rate),
+    hourly_rate: baseRate,
+    overtime_week_hours: ot.overtimeWeekHours,
+    overtime_week_rate: overtimeWeekRate,
+    overtime_weekend_hours: ot.overtimeWeekendHours,
+    overtime_weekend_rate: overtimeWeekendRate,
+    overtime_bank_holiday_hours: ot.overtimeBankHolidayHours,
+    overtime_bank_holiday_rate: overtimeBankHolidayRate,
+    line_amount: lineAmount,
     notes: row.notes || ''
   };
 }
 
-function invoicePreviewPayload(rows, hourlyRate) {
-  const lines = rows.map(r => invoiceLineFromTimesheet(r, hourlyRate));
+function invoicePreviewPayload(rows, rates) {
+  const lines = rows.map(r => invoiceLineFromTimesheet(r, rates));
   const totalHours = lines.reduce((sum, r) => sum + Number(r.hours || 0), 0);
+  const totalOvertimeWeekHours = lines.reduce((sum, r) => sum + Number(r.overtime_week_hours || 0), 0);
+  const totalOvertimeWeekendHours = lines.reduce((sum, r) => sum + Number(r.overtime_weekend_hours || 0), 0);
+  const totalOvertimeBankHolidayHours = lines.reduce((sum, r) => sum + Number(r.overtime_bank_holiday_hours || 0), 0);
   const totalAmount = toMoney(lines.reduce((sum, r) => sum + Number(r.line_amount || 0), 0));
-  return { totalHours, hourlyRate: Number(hourlyRate), totalAmount, count: lines.length, lines };
+  return { totalHours, totalOvertimeWeekHours, totalOvertimeWeekendHours, totalOvertimeBankHolidayHours, ...rates, totalAmount, count: lines.length, lines };
 }
 
 async function findApprovedInvoiceTimesheets({ clientId, periodStart, periodEnd, lock = false }) {
@@ -1337,13 +1425,17 @@ function readInvoiceRequest(body) {
   const periodEnd = normalizeDateOnly(body.periodEnd);
   const clientId = body.clientId || null;
   const hourlyRate = Number(body.hourlyRate || process.env.DEFAULT_HOURLY_RATE || 0);
-  return { periodType, periodStart, periodEnd, clientId, hourlyRate };
+  const overtimeWeekRate = Number(body.overtimeWeekRate || body.overtime_week_rate || 0);
+  const overtimeWeekendRate = Number(body.overtimeWeekendRate || body.overtime_weekend_rate || 0);
+  const overtimeBankHolidayRate = Number(body.overtimeBankHolidayRate || body.overtime_bank_holiday_rate || 0);
+  return { periodType, periodStart, periodEnd, clientId, hourlyRate, overtimeWeekRate, overtimeWeekendRate, overtimeBankHolidayRate };
 }
 
-function validateInvoiceRequest({ periodStart, periodEnd, hourlyRate }) {
+function validateInvoiceRequest({ periodStart, periodEnd, hourlyRate, overtimeWeekRate = 0, overtimeWeekendRate = 0, overtimeBankHolidayRate = 0 }) {
   if (!periodStart || !periodEnd) return 'Invalid periodStart or periodEnd';
   if (new Date(periodStart) > new Date(periodEnd)) return 'periodStart must be before periodEnd';
   if (!hourlyRate || hourlyRate < 0) return 'hourlyRate must be greater than zero';
+  if ([overtimeWeekRate, overtimeWeekendRate, overtimeBankHolidayRate].some(v => !Number.isFinite(Number(v)) || Number(v) < 0)) return 'Overtime rates must be zero or greater';
   return null;
 }
 
@@ -1358,15 +1450,15 @@ app.post('/api/invoices/preview', authMiddleware, async (req, res) => {
     if (rows.length === 0) return res.json({ ...request, count: 0, totalHours: 0, totalAmount: 0, lines: [], message: 'No approved uninvoiced timesheets found for this period' });
     const invoiceClientId = request.clientId || rows[0].client_id;
     if (!request.clientId && rows.some(r => r.client_id !== invoiceClientId)) return res.status(400).json({ error: 'Select a client when multiple clients have approved timesheets in the period' });
-    res.json({ ...request, clientId: invoiceClientId, ...invoicePreviewPayload(rows, request.hourlyRate) });
+    res.json({ ...request, clientId: invoiceClientId, ...invoicePreviewPayload(rows, request) });
   } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
 });
 
 // Owner: create a draft invoice from approved, uninvoiced timesheets.
 app.post('/api/invoices/generate', authMiddleware, async (req, res) => {
   if (req.user.role !== 'owner') return res.status(403).json({ error: 'Forbidden' });
-  const { periodType, periodStart, periodEnd, clientId, hourlyRate } = readInvoiceRequest(req.body);
-  const validationError = validateInvoiceRequest({ periodStart, periodEnd, hourlyRate });
+  const { periodType, periodStart, periodEnd, clientId, hourlyRate, overtimeWeekRate, overtimeWeekendRate, overtimeBankHolidayRate } = readInvoiceRequest(req.body);
+  const validationError = validateInvoiceRequest({ periodStart, periodEnd, hourlyRate, overtimeWeekRate, overtimeWeekendRate, overtimeBankHolidayRate });
   if (validationError) return res.status(400).json({ error: validationError });
 
   const id = crypto.randomUUID();
@@ -1378,15 +1470,15 @@ app.post('/api/invoices/generate', authMiddleware, async (req, res) => {
       if (rows.length === 0) return res.status(400).json({ error: 'No approved uninvoiced timesheets found for this period' });
       const invoiceClientId = clientId || rows[0].client_id;
       if (!clientId && rows.some(r => r.client_id !== invoiceClientId)) return res.status(400).json({ error: 'Select a client when multiple clients have approved timesheets in the period' });
-      const preview = invoicePreviewPayload(rows, hourlyRate);
+      const preview = invoicePreviewPayload(rows, { hourlyRate, overtimeWeekRate, overtimeWeekendRate, overtimeBankHolidayRate });
       const tx = sqliteDb.transaction(() => {
         sqliteDb.prepare('INSERT INTO invoices(id,invoice_number,client_id,period_type,period_start,period_end,total_hours,hourly_rate,total_amount,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)')
           .run(id, number, invoiceClientId, periodType, periodStart, periodEnd, preview.totalHours, hourlyRate, preview.totalAmount, 'draft', createdAt);
-        const insertLine = sqliteDb.prepare('INSERT INTO invoice_lines(id,invoice_id,timesheet_id,staff_id,work_date,hours,hourly_rate,line_amount,notes,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)');
+        const insertLine = sqliteDb.prepare('INSERT INTO invoice_lines(id,invoice_id,timesheet_id,staff_id,work_date,hours,hourly_rate,overtime_week_hours,overtime_week_rate,overtime_weekend_hours,overtime_weekend_rate,overtime_bank_holiday_hours,overtime_bank_holiday_rate,line_amount,notes,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
         const update = sqliteDb.prepare('UPDATE timesheets SET status = ?, invoice_id = ?, invoiced_at = ?, updated_at = ? WHERE id = ?');
         const event = sqliteDb.prepare('INSERT INTO timesheet_events(id,timesheet_id,actor_id,event_type,from_status,to_status,comment,created_at) VALUES(?,?,?,?,?,?,?,?)');
         preview.lines.forEach(line => {
-          insertLine.run(crypto.randomUUID(), id, line.timesheet_id, line.staff_id, line.work_date, line.hours, line.hourly_rate, line.line_amount, line.notes, createdAt);
+          insertLine.run(crypto.randomUUID(), id, line.timesheet_id, line.staff_id, line.work_date, line.hours, line.hourly_rate, line.overtime_week_hours, line.overtime_week_rate, line.overtime_weekend_hours, line.overtime_weekend_rate, line.overtime_bank_holiday_hours, line.overtime_bank_holiday_rate, line.line_amount, line.notes, createdAt);
         });
         rows.forEach(r => {
           update.run('invoiced', id, createdAt, createdAt, r.id);
@@ -1408,10 +1500,10 @@ app.post('/api/invoices/generate', authMiddleware, async (req, res) => {
       await pool.query('ROLLBACK');
       return res.status(400).json({ error: 'Select a client when multiple clients have approved timesheets in the period' });
     }
-    const preview = invoicePreviewPayload(rows, hourlyRate);
+    const preview = invoicePreviewPayload(rows, { hourlyRate, overtimeWeekRate, overtimeWeekendRate, overtimeBankHolidayRate });
     await pool.query('INSERT INTO invoices(id,invoice_number,client_id,period_type,period_start,period_end,total_hours,hourly_rate,total_amount,status,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)', [id, number, invoiceClientId, periodType, periodStart, periodEnd, preview.totalHours, hourlyRate, preview.totalAmount, 'draft', createdAt]);
     for (const line of preview.lines) {
-      await pool.query('INSERT INTO invoice_lines(id,invoice_id,timesheet_id,staff_id,work_date,hours,hourly_rate,line_amount,notes,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)', [crypto.randomUUID(), id, line.timesheet_id, line.staff_id, line.work_date, line.hours, line.hourly_rate, line.line_amount, line.notes, createdAt]);
+      await pool.query('INSERT INTO invoice_lines(id,invoice_id,timesheet_id,staff_id,work_date,hours,hourly_rate,overtime_week_hours,overtime_week_rate,overtime_weekend_hours,overtime_weekend_rate,overtime_bank_holiday_hours,overtime_bank_holiday_rate,line_amount,notes,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)', [crypto.randomUUID(), id, line.timesheet_id, line.staff_id, line.work_date, line.hours, line.hourly_rate, line.overtime_week_hours, line.overtime_week_rate, line.overtime_weekend_hours, line.overtime_weekend_rate, line.overtime_bank_holiday_hours, line.overtime_bank_holiday_rate, line.line_amount, line.notes, createdAt]);
     }
     await pool.query('UPDATE timesheets SET status=$1, invoice_id=$2, invoiced_at=$3, updated_at=$3 WHERE id = ANY($4)', ['invoiced', id, createdAt, rows.map(r => r.id)]);
     for (const r of rows) {
