@@ -616,8 +616,9 @@ app.post('/api/users', authMiddleware, async (req, res) => {
       const hashed = bcrypt.hashSync(password, 8);
       const id = crypto.randomUUID();
   sqliteDb.prepare('INSERT INTO users(id,name,email,password,role,client_id) VALUES(?,?,?,?,?,?)').run(id, name, email, hashed, role, clientId || null);
-      // send invitation email
-      await sendEmail(email, 'You have been invited to Mega Construct', `Hello ${name},\n\nAn account was created for you. Email: ${email}\nPlease use the password provided by the owner to login. You can reset your password if needed.`);
+      // Send invitation email in the background so user creation is not blocked by SMTP/test-mail latency.
+      sendEmail(email, 'You have been invited to Mega Construct', `Hello ${name},\n\nAn account was created for you. Email: ${email}\nPlease use the password provided by the owner to login. You can reset your password if needed.`)
+        .catch(e => console.error('Invitation email failed', e));
       return res.json({ id, name, email, role });
     } else {
       const existingRes = await pool.query('SELECT id,name,email,role FROM users WHERE email=$1', [email]);
@@ -625,7 +626,8 @@ app.post('/api/users', authMiddleware, async (req, res) => {
       const hashed = bcrypt.hashSync(password, 8);
       const id = crypto.randomUUID();
   await pool.query('INSERT INTO users(id,name,email,password,role,client_id) VALUES($1,$2,$3,$4,$5,$6)', [id, name, email, hashed, role, clientId || null]);
-      await sendEmail(email, 'You have been invited to Mega Construct', `Hello ${name},\n\nAn account was created for you. Email: ${email}\nPlease use the password provided by the owner to login. You can reset your password if needed.`);
+      sendEmail(email, 'You have been invited to Mega Construct', `Hello ${name},\n\nAn account was created for you. Email: ${email}\nPlease use the password provided by the owner to login. You can reset your password if needed.`)
+        .catch(e => console.error('Invitation email failed', e));
       return res.json({ id, name, email, role });
     }
   } catch (e) {
