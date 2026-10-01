@@ -912,6 +912,24 @@ app.get('/api/timesheets/owner/history', authMiddleware, async (req, res) => {
   } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
 });
 
+
+// Owner dashboard summary for Phase 5 oversight cards.
+app.get('/api/owner/summary', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'owner') return res.status(403).json({ error: 'Forbidden' });
+  try {
+    if (useSqlite) {
+      const userRows = sqliteDb.prepare('SELECT role, COUNT(*) as count FROM users GROUP BY role').all();
+      const timesheetRows = sqliteDb.prepare('SELECT status, COUNT(*) as count, COALESCE(SUM(hours), 0) as hours FROM timesheets GROUP BY status').all();
+      const invoiceRows = sqliteDb.prepare('SELECT status, COUNT(*) as count, COALESCE(SUM(total_amount), 0) as amount FROM invoices GROUP BY status').all();
+      return res.json({ users: userRows, timesheets: timesheetRows, invoices: invoiceRows });
+    }
+    const users = (await pool.query('SELECT role, COUNT(*)::int as count FROM users GROUP BY role ORDER BY role')).rows;
+    const timesheets = (await pool.query('SELECT status, COUNT(*)::int as count, COALESCE(SUM(hours), 0)::float as hours FROM timesheets GROUP BY status ORDER BY status')).rows;
+    const invoices = (await pool.query('SELECT status, COUNT(*)::int as count, COALESCE(SUM(total_amount), 0)::float as amount FROM invoices GROUP BY status ORDER BY status')).rows;
+    res.json({ users, timesheets, invoices });
+  } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
+});
+
 // Clients list for staff selection
 app.get('/api/clients', authMiddleware, async (req, res) => {
   if (!['staff','owner','client'].includes(req.user.role)) return res.status(403).json({ error: 'Forbidden' });

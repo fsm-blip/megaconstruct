@@ -34,8 +34,9 @@ export default function OwnerPage({ token }) {
   const [invoiceRate, setInvoiceRate] = useState('')
   const [invoicePreview, setInvoicePreview] = useState(null)
   const [selectedInvoice, setSelectedInvoice] = useState(null)
+  const [summary, setSummary] = useState(null)
 
-  useEffect(()=>{ if (token) { loadUsers(); loadClients(); loadTimes(); loadInvoices(); } }, [token])
+  useEffect(()=>{ if (token) { loadUsers(); loadClients(); loadSummary(); loadTimes(); loadInvoices(); loadSummary(); } }, [token])
 
   function invoicePayload() {
     return {
@@ -65,6 +66,13 @@ export default function OwnerPage({ token }) {
       const r = await axios.get(`${API}/api/users`, { headers: { Authorization: `Bearer ${token}` } })
       setUsers(r.data)
     } catch (e) { console.error('loadUsers', e); alert('Failed loading users') }
+  }
+
+  async function loadSummary() {
+    try {
+      const r = await axios.get(`${API}/api/owner/summary`, { headers: { Authorization: `Bearer ${token}` } })
+      setSummary(r.data)
+    } catch (e) { console.error('loadSummary', e) }
   }
 
   async function loadClients() {
@@ -124,7 +132,7 @@ export default function OwnerPage({ token }) {
       alert('Draft invoice generated')
       setInvoicePreview(null)
       setSelectedInvoice(r.data)
-      loadInvoices(); loadTimes(viewMode)
+      loadInvoices(); loadTimes(viewMode); loadSummary()
     } catch (e) {
       console.error('generateInvoice', e)
       alert(e.response?.data?.error || 'Invoice generation failed')
@@ -143,7 +151,7 @@ export default function OwnerPage({ token }) {
     try {
       await axios.delete(`${API}/api/users/${id}`, { headers: { Authorization: `Bearer ${token}` } })
       alert('User deleted')
-      loadUsers()
+      loadUsers(); loadSummary()
     } catch (e) {
       if (e.response && e.response.status === 409) {
         const proceed = confirm('User has timesheets. Delete user and associated timesheets?')
@@ -151,7 +159,7 @@ export default function OwnerPage({ token }) {
           try {
             await axios.delete(`${API}/api/users/${id}?force=true`, { headers: { Authorization: `Bearer ${token}` } })
             alert('User deleted (with timesheets)')
-            loadUsers()
+            loadUsers(); loadSummary()
             return
           } catch (err) { console.error('force delete', err); alert('Force delete failed') }
         }
@@ -165,13 +173,30 @@ export default function OwnerPage({ token }) {
   const grouped = times.reduce((acc, t) => { acc[t.staff_id] = acc[t.staff_id] || []; acc[t.staff_id].push(t); return acc }, {})
   const previewLines = invoicePreview?.lines || []
   const detailLines = selectedInvoice?.lines || []
+  const summaryValue = (group, key, field = 'count') => Number((summary?.[group] || []).find(r => r.status === key || r.role === key)?.[field] || 0)
+  const totalUsers = (summary?.users || []).reduce((sum, r) => sum + Number(r.count || 0), 0)
+  const totalInvoiceAmount = (summary?.invoices || []).reduce((sum, r) => sum + Number(r.amount || 0), 0)
+
 
   return (
     <div className="card">
       <h3>Owner Console</h3>
+      {summary && (
+        <div style={{display:'grid',gridTemplateColumns:'repeat(4, minmax(140px, 1fr))',gap:8,marginBottom:16}}>
+          <div className="card"><strong>Pending approval</strong><div>{summaryValue('timesheets', 'submitted')}</div></div>
+          <div className="card"><strong>Returned</strong><div>{summaryValue('timesheets', 'returned')}</div></div>
+          <div className="card"><strong>Approved uninvoiced</strong><div>{summaryValue('timesheets', 'approved')} / {summaryValue('timesheets', 'approved', 'hours')}h</div></div>
+          <div className="card"><strong>Invoiced value</strong><div>£{totalInvoiceAmount.toFixed(2)}</div></div>
+          <div className="card"><strong>Users</strong><div>{totalUsers}</div></div>
+          <div className="card"><strong>Staff</strong><div>{summaryValue('users', 'staff')}</div></div>
+          <div className="card"><strong>Clients</strong><div>{summaryValue('users', 'client')}</div></div>
+          <div className="card"><strong>Draft invoices</strong><div>{summaryValue('invoices', 'draft')}</div></div>
+        </div>
+      )}
       <div style={{display:'flex',gap:12}}>
         <div style={{flex:1}}>
-          <h4>Create user</h4>
+          <h4>Users</h4>
+          <p>Create staff/client users and assign staff to a client.</p>
           <input placeholder="name" value={name} onChange={e=>setName(e.target.value)} />
           <input placeholder="email" value={email} onChange={e=>setEmail(e.target.value)} />
           <input placeholder="password" value={password} onChange={e=>setPassword(e.target.value)} />
@@ -197,7 +222,8 @@ export default function OwnerPage({ token }) {
           </ul>
         </div>
         <div style={{flex:2}}>
-          <h4>Timesheets (Owner)</h4>
+          <h4>Timesheets</h4>
+          <p>Review pending or approved-uninvoiced rows. Invoiced rows are locked to invoices.</p>
           <div style={{marginBottom:8}}>
             <button onClick={()=>{ setViewMode('pending'); loadTimes('pending') }}>Load pending</button>
             <button onClick={()=>{ setViewMode('approved'); loadTimes('approved') }} style={{marginLeft:8}}>Load approved uninvoiced</button>
@@ -220,6 +246,7 @@ export default function OwnerPage({ token }) {
         </div>
         <div style={{flex:1.6}}>
           <h4>Invoices</h4>
+          <p>Preview line items before generating a draft invoice.</p>
           <div style={{display:'grid', gap:8}}>
             <select value={invoiceClientId} onChange={e=>{ setInvoiceClientId(e.target.value); setInvoicePreview(null) }}>
               <option value="">Select client</option>

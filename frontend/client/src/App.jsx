@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import axios from 'axios'
 import StaffPage from './pages/Staff'
 import ClientPage from './pages/Client'
@@ -6,16 +6,22 @@ import OwnerPage from './pages/Owner'
 
 const API = import.meta.env.VITE_API_URL || ''
 
-function Login({ onLogin }) {
+function Login({ onLogin, expectedRole }) {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
-  const [role, setRole] = useState('staff')
+  const [role, setRole] = useState(expectedRole || 'staff')
   const [resetEmail, setResetEmail] = useState('')
+
+  useEffect(() => { if (expectedRole) setRole(expectedRole) }, [expectedRole])
 
   async function handleLogin(e) {
     e.preventDefault()
     try {
       const res = await axios.post(`${API}/api/login`, { email, password })
+      if (res.data.user.role !== role) {
+        alert(`This account is ${res.data.user.role}, not ${role}. Please choose the correct role.`)
+        return
+      }
       onLogin(res.data)
     } catch (e) {
       alert('Login failed')
@@ -83,7 +89,7 @@ function Landing({ onLogin, onSelectRole, selectedRole }) {
         <div style={{flex:1}}>
           {selectedRole ? <div>
             <h4>Login as {selectedRole}</h4>
-            <Login onLogin={onLogin} />
+            <Login onLogin={onLogin} expectedRole={selectedRole} />
           </div> : (
             <div className="card">
               <h4>Sign in</h4>
