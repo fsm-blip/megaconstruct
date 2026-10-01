@@ -694,12 +694,42 @@ app.delete('/api/users/:id', authMiddleware, async (req, res) => {
       return res.status(409).json({ error: 'User has timesheets', timesheets });
     }
 
-    // proceed to delete (force or no timesheets)
-    if (useSqlite) sqliteDb.prepare('DELETE FROM users WHERE id = ?').run(id);
-    else await pool.query('DELETE FROM users WHERE id=$1', [id]);
-    if (userRow && userRow.email) await sendEmail(userRow.email, 'Account deleted at Mega Construct', `Hello ${userRow.name || ''},\n\nYour account has been deleted by the owner.`);
-    res.json({ ok: true, deleted: true });
+    const invoicedTimesheets = timesheets.filter(t => t.status === 'invoiced' || t.invoice_id);
+    if (force && invoicedTimesheets.length > 0) {
+      return res.status(400).json({ error: 'Cannot delete user because they have invoiced timesheets. Invoice history must remain intact.' });
+    }
+
+    // proceed to delete (force also removes non-invoiced associated timesheets)
+    if (useSqlite) {
+      const tx = sqliteDb.transaction(() => {
+        if (force && timesheets.length > 0) {
+          const deleteEntries = sqliteDb.prepare('DELETE FROM timesheet_entries WHERE timesheet_id = ?');
+          const deleteEvents = sqliteDb.prepare('DELETE FROM timesheet_events WHERE timesheet_id = ?');
+          const deleteTimesheet = sqliteDb.prepare('DELETE FROM timesheets WHERE id = ?');
+          timesheets.forEach(t => {
+            deleteEntries.run(t.id);
+            deleteEvents.run(t.id);
+            deleteTimesheet.run(t.id);
+          });
+        }
+        sqliteDb.prepare('DELETE FROM users WHERE id = ?').run(id);
+      });
+      tx();
+    } else {
+      await pool.query('BEGIN');
+      if (force && timesheets.length > 0) {
+        const ids = timesheets.map(t => t.id);
+        await pool.query('DELETE FROM timesheet_entries WHERE timesheet_id = ANY($1)', [ids]);
+        await pool.query('DELETE FROM timesheet_events WHERE timesheet_id = ANY($1)', [ids]);
+        await pool.query('DELETE FROM timesheets WHERE id = ANY($1)', [ids]);
+      }
+      await pool.query('DELETE FROM users WHERE id=$1', [id]);
+      await pool.query('COMMIT');
+    }
+    if (userRow && userRow.email) sendEmail(userRow.email, 'Account deleted at Mega Construct', `Hello ${userRow.name || ''},\n\nYour account has been deleted by the owner.`).catch(e => console.error('Deletion email failed', e));
+    res.json({ ok: true, deleted: true, deletedTimesheets: force ? timesheets.length : 0 });
   } catch (e) {
+    if (!useSqlite) { try { await pool.query('ROLLBACK'); } catch (_) {} }
     console.error(e);
     res.status(500).json({ error: 'Server error' });
   }

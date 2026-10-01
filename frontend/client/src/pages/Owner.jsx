@@ -165,7 +165,7 @@ export default function OwnerPage({ token }) {
         }
       }
       console.error('deleteUser', e)
-      alert('Delete failed')
+      alert(e.response?.data?.error || 'Delete failed')
     }
   }
 
