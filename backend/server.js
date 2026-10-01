@@ -520,11 +520,11 @@ async function authMiddleware(req, res, next) {
   try {
     const payload = jwt.verify(token, JWT_SECRET);
     if (useSqlite) {
-      const row = sqliteDb.prepare('SELECT id,name,email,role FROM users WHERE id = ?').get(payload.id);
+      const row = sqliteDb.prepare('SELECT id,name,email,role,client_id FROM users WHERE id = ?').get(payload.id);
       if (!row) return res.status(401).json({ error: 'Invalid user' });
       req.user = row;
     } else {
-      const userRes = await pool.query('SELECT id,name,email,role FROM users WHERE id=$1', [payload.id]);
+      const userRes = await pool.query('SELECT id,name,email,role,client_id FROM users WHERE id=$1', [payload.id]);
       if (userRes.rowCount === 0) return res.status(401).json({ error: 'Invalid user' });
       req.user = userRes.rows[0];
     }
@@ -545,15 +545,15 @@ app.post('/api/login', async (req, res) => {
   try {
     let user;
     if (useSqlite) {
-      user = sqliteDb.prepare('SELECT id,name,email,password,role FROM users WHERE email = ?').get(email);
+      user = sqliteDb.prepare('SELECT id,name,email,password,role,client_id FROM users WHERE email = ?').get(email);
     } else {
-      const userRes = await pool.query('SELECT id,name,email,password,role FROM users WHERE email=$1', [email]);
+      const userRes = await pool.query('SELECT id,name,email,password,role,client_id FROM users WHERE email=$1', [email]);
       user = userRes.rowCount ? userRes.rows[0] : null;
     }
     if (!user) return res.status(400).json({ error: 'Invalid credentials' });
     const ok = bcrypt.compareSync(password, user.password);
     if (!ok) return res.status(400).json({ error: 'Invalid credentials' });
-    res.json({ token: generateToken(user), user: { id: user.id, name: user.name, email: user.email, role: user.role } });
+    res.json({ token: generateToken(user), user: { id: user.id, name: user.name, email: user.email, role: user.role, client_id: user.client_id || null } });
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: 'Server error' });
@@ -566,6 +566,7 @@ app.post('/api/timesheets', authMiddleware, async (req, res) => {
   const workDate = normalizeDateOnly(date);
   const numericHours = Number(hours);
   if (!workDate || !numericHours || numericHours <= 0 || !clientId) return res.status(400).json({ error: 'Missing or invalid fields' });
+  if (!req.user.client_id || clientId !== req.user.client_id) return res.status(403).json({ error: 'Staff can only submit timesheets to their assigned client' });
   const id = crypto.randomUUID();
   const createdAt = new Date().toISOString();
   const { periodStart, periodEnd } = timesheetPeriodForDate(workDate);
@@ -672,9 +673,9 @@ app.delete('/api/users/:id', authMiddleware, async (req, res) => {
   try {
     // Protect owner deletion
     let userRow;
-    if (useSqlite) userRow = sqliteDb.prepare('SELECT id,name,email,role FROM users WHERE id = ?').get(id);
+    if (useSqlite) userRow = sqliteDb.prepare('SELECT id,name,email,role,client_id FROM users WHERE id = ?').get(id);
     else {
-      const r = await pool.query('SELECT id,name,email,role FROM users WHERE id=$1', [id]);
+      const r = await pool.query('SELECT id,name,email,role,client_id FROM users WHERE id=$1', [id]);
       userRow = r.rowCount ? r.rows[0] : null;
     }
     if (!userRow) return res.status(404).json({ error: 'Not found' });

@@ -3,7 +3,7 @@ import axios from 'axios'
 const API = import.meta.env.VITE_API_URL || ''
 const cleanDate = value => value ? String(value).slice(0, 10) : ''
 
-export default function StaffPage({ token }) {
+export default function StaffPage({ token, user }) {
   const [clients, setClients] = useState([])
   const [date, setDate] = useState('')
   const [hours, setHours] = useState(8)
@@ -16,8 +16,10 @@ export default function StaffPage({ token }) {
 
   async function loadClients() {
     const res = await axios.get(`${API}/api/clients`, { headers: { Authorization: `Bearer ${token}` } })
-    setClients(res.data)
-    if (res.data[0]) setClientId(res.data[0].id)
+    const assignedClientId = user?.client_id || user?.clientId
+    const visibleClients = assignedClientId ? res.data.filter(c => c.id === assignedClientId) : res.data
+    setClients(visibleClients)
+    if (visibleClients[0]) setClientId(visibleClients[0].id)
   }
 
   async function loadHistory() {
@@ -64,7 +66,7 @@ export default function StaffPage({ token }) {
     <div className="card">
       <h3>Staff (React) - {editingId ? 'Edit returned timesheet' : 'Submit'}</h3>
       {!editingId && (
-        <select value={clientId} onChange={e=>setClientId(e.target.value)}>
+        <select value={clientId} onChange={e=>setClientId(e.target.value)} disabled={clients.length <= 1}>
           {clients.map(c=> <option key={c.id} value={c.id}>{c.name} ({c.email})</option>)}
         </select>
       )}

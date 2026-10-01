@@ -317,7 +317,7 @@ export default function App() {
               <button onClick={()=>{ setUser(null); setToken(null); setSelectedRole(null); }}>Logout</button>
             </div>
           </div>
-          {user.role === 'staff' && <StaffPage token={token} />}
+          {user.role === 'staff' && <StaffPage token={token} user={user} />}
           {user.role === 'client' && <ClientPage token={token} />}
           {user.role === 'owner' && <OwnerPage token={token} />}
         </div>
