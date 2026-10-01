@@ -680,7 +680,19 @@ app.delete('/api/users/:id', authMiddleware, async (req, res) => {
     if (!userRow) return res.status(404).json({ error: 'Not found' });
     if (userRow.role === 'owner') return res.status(400).json({ error: 'Cannot delete owner' });
 
-    // Check timesheets belonging to or approved by this user
+    if (userRow.role === 'client') {
+      const assignedStaff = useSqlite
+        ? sqliteDb.prepare('SELECT id,name,email FROM users WHERE role = ? AND client_id = ?').all('staff', id)
+        : (await pool.query('SELECT id,name,email FROM users WHERE role=$1 AND client_id=$2', ['staff', id])).rows;
+      if (assignedStaff.length > 0) {
+        return res.status(400).json({
+          error: 'Cannot delete client while staff are assigned to them. Delete or reassign the staff first.',
+          assignedStaff
+        });
+      }
+    }
+
+    // Check timesheets belonging to or associated with this user
     let timesheets = [];
     if (useSqlite) {
       timesheets = sqliteDb.prepare('SELECT * FROM timesheets WHERE staff_id = ? OR client_id = ?').all(id, id);

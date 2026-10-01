@@ -151,7 +151,7 @@ export default function OwnerPage({ token }) {
     try {
       await axios.delete(`${API}/api/users/${id}`, { headers: { Authorization: `Bearer ${token}` } })
       alert('User deleted')
-      loadUsers(); loadSummary(); loadTimes(viewMode)
+      loadUsers(); loadClients(); loadSummary(); loadTimes(viewMode)
     } catch (e) {
       if (e.response && e.response.status === 409) {
         const proceed = confirm('User has timesheets. Delete user and associated timesheets?')
@@ -159,7 +159,7 @@ export default function OwnerPage({ token }) {
           try {
             await axios.delete(`${API}/api/users/${id}?force=true`, { headers: { Authorization: `Bearer ${token}` } })
             alert('User deleted (with timesheets)')
-            loadUsers(); loadSummary(); loadTimes(viewMode)
+            loadUsers(); loadClients(); loadSummary(); loadTimes(viewMode)
             return
           } catch (err) { console.error('force delete', err); alert('Force delete failed') }
         }
