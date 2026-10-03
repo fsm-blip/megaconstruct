@@ -867,7 +867,7 @@ app.get('/api/users/:id/timesheets', authMiddleware, async (req, res) => {
       const rows = sqliteDb.prepare('SELECT * FROM timesheets WHERE staff_id = ? OR client_id = ? ORDER BY COALESCE(approved_at, created_at) DESC').all(id, id);
       return res.json(rows);
     }
-    const r = await pool.query('SELECT * FROM timesheets WHERE staff_id=$1 OR client_id=$1 ORDER BY COALESCE(approved_at, created_at) DESC', [id]);
+    const r = await pool.query('SELECT * FROM timesheets WHERE staff_id=$1 OR client_id=$1 ORDER BY COALESCE(approved_at::timestamptz, created_at::timestamptz) DESC', [id]);
     res.json(r.rows);
   } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
 });
@@ -1045,7 +1045,7 @@ app.get('/api/timesheets/client/history', authMiddleware, async (req, res) => {
         LIMIT 1
       ) ev ON true
       WHERE t.client_id=$1 AND t.status = ANY($2::text[])
-      ORDER BY COALESCE(t.approved_at, t.returned_at, t.invoiced_at, t.updated_at, t.created_at) DESC`;
+      ORDER BY COALESCE(t.approved_at::timestamptz, t.returned_at::timestamptz, t.invoiced_at::timestamptz, t.updated_at::timestamptz, t.created_at::timestamptz) DESC`;
     const r = await pool.query(q, [req.user.id, statuses]);
     res.json(r.rows);
   } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
@@ -1072,7 +1072,7 @@ app.get('/api/timesheets/owner/history', authMiddleware, async (req, res) => {
       const rows = sqliteDb.prepare('SELECT * FROM timesheets ORDER BY COALESCE(approved_at, created_at) DESC').all();
       return res.json(rows);
     }
-    const r = await pool.query('SELECT * FROM timesheets ORDER BY COALESCE(approved_at, created_at) DESC');
+    const r = await pool.query('SELECT * FROM timesheets ORDER BY COALESCE(approved_at::timestamptz, created_at::timestamptz) DESC');
     res.json(r.rows);
   } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
 });
