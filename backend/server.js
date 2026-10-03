@@ -1550,12 +1550,27 @@ app.get('/api/invoices/:id', authMiddleware, async (req, res) => {
   } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
 });
 
-initDb()
-  .then(() => {
-    app.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));
-  })
-  .catch(err => {
-    console.error('DB init error', err);
-    process.exit(1);
-  });
+const dbReady = initDb();
+
+if (process.env.VERCEL) {
+  module.exports = async (req, res) => {
+    try {
+      await dbReady;
+      return app(req, res);
+    } catch (err) {
+      console.error('DB init error', err);
+      res.statusCode = 500;
+      res.end('Server initialization failed');
+    }
+  };
+} else {
+  dbReady
+    .then(() => {
+      app.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));
+    })
+    .catch(err => {
+      console.error('DB init error', err);
+      process.exit(1);
+    });
+}
 
