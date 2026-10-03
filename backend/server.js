@@ -628,13 +628,14 @@ app.post('/api/register', async (req, res) => {
 });
 
 app.post('/api/login', async (req, res) => {
-  const { email, password } = req.body;
+  const email = String(req.body.email || '').trim().toLowerCase();
+  const password = String(req.body.password || '').trim();
   try {
     let user;
     if (useSqlite) {
-      user = sqliteDb.prepare('SELECT id,name,email,password,role,client_id FROM users WHERE email = ?').get(email);
+      user = sqliteDb.prepare('SELECT id,name,email,password,role,client_id FROM users WHERE lower(email) = lower(?)').get(email);
     } else {
-      const userRes = await pool.query('SELECT id,name,email,password,role,client_id FROM users WHERE email=$1', [email]);
+      const userRes = await pool.query('SELECT id,name,email,password,role,client_id FROM users WHERE lower(email)=lower($1)', [email]);
       user = userRes.rowCount ? userRes.rows[0] : null;
     }
     if (!user) return res.status(400).json({ error: 'Invalid credentials' });

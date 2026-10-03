@@ -17,25 +17,25 @@ function Login({ onLogin, expectedRole }) {
   async function handleLogin(e) {
     e.preventDefault()
     try {
-      const res = await axios.post(`${API}/api/login`, { email, password })
+      const res = await axios.post(`${API}/api/login`, { email: email.trim(), password: password.trim() })
       if (res.data.user.role !== role) {
         alert(`This account is ${res.data.user.role}, not ${role}. Please choose the correct role.`)
         return
       }
       onLogin(res.data)
     } catch (e) {
-      alert('Login failed')
+      alert(e.response?.data?.error || 'Login failed')
     }
   }
 
   async function requestReset(e) {
     e.preventDefault()
-    if (!resetEmail) return alert('Enter email')
+    if (!resetEmail.trim()) return alert('Enter email')
     try {
-      await axios.post(`${API}/api/password-reset/request`, { email: resetEmail })
+      await axios.post(`${API}/api/password-reset/request`, { email: resetEmail.trim() })
       alert('If that email exists, a reset link was sent')
       setResetEmail('')
-    } catch (e) { alert('Request failed') }
+    } catch (e) { alert(e.response?.data?.error || 'Request failed') }
   }
 
   return (
