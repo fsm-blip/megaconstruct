@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react'
 import axios from 'axios'
 const API = import.meta.env.VITE_API_URL || ''
 const cleanDate = value => value ? String(value).slice(0, 10) : ''
+const cleanDateTime = value => value ? new Date(value).toLocaleString() : ''
 const h = value => Number(value || 0)
 
 export default function ClientPage({ token }) {
@@ -88,6 +89,8 @@ export default function ClientPage({ token }) {
           {history.map(t => (
             <li key={t.id}>
               <strong>{cleanDate(t.date)}</strong> — {timeSummary(t)} by {staffName(t)} — {t.status}
+              {(t.latest_client_event_type || t.approved_at || t.returned_at) && <div><strong>Client action:</strong> {t.latest_client_event_type || (t.approved_at ? 'approved' : 'returned')} {cleanDateTime(t.latest_client_event_at || t.approved_at || t.returned_at)}</div>}
+              {t.approved_at && <div><strong>Approved at:</strong> {cleanDateTime(t.approved_at)}</div>}
               {t.return_reason && <div><strong>Return reason:</strong> {t.return_reason}</div>}
             </li>
           ))}

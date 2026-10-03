@@ -61,7 +61,8 @@ async function initDb() {
         name TEXT NOT NULL,
         email TEXT UNIQUE NOT NULL,
         password TEXT NOT NULL,
-        role TEXT NOT NULL
+        role TEXT NOT NULL,
+        joined_at TEXT
       );
       CREATE TABLE IF NOT EXISTS timesheets (
         id TEXT PRIMARY KEY,
@@ -155,6 +156,12 @@ async function initDb() {
     } catch (e) {
       // ignore if column exists
     }
+    try {
+      sqliteDb.prepare("ALTER TABLE users ADD COLUMN joined_at TEXT").run();
+    } catch (e) {
+      // ignore if column exists
+    }
+    sqliteDb.prepare("UPDATE users SET joined_at = COALESCE(joined_at, ?)").run(new Date().toISOString());
     const sqliteTimesheetColumns = [
       ['invoice_id', 'TEXT'],
       ['overtime_week_hours', 'REAL DEFAULT 0'],
@@ -202,7 +209,8 @@ async function initDb() {
         name text NOT NULL,
         email text UNIQUE NOT NULL,
         password text NOT NULL,
-        role text NOT NULL
+        role text NOT NULL,
+        joined_at timestamptz
       );
     `);
     await pool.query(`
@@ -305,6 +313,18 @@ async function initDb() {
     // ensure client_id column exists
     try {
       await pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS client_id text");
+      await pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS joined_at timestamptz");
+      await pool.query(`
+        UPDATE users u
+        SET joined_at = COALESCE(u.joined_at, first_seen.first_at, NOW())
+        FROM (
+          SELECT u2.id, MIN(t.created_at)::timestamptz AS first_at
+          FROM users u2
+          LEFT JOIN timesheets t ON t.staff_id = u2.id OR t.client_id = u2.id
+          GROUP BY u2.id
+        ) first_seen
+        WHERE u.id = first_seen.id AND u.joined_at IS NULL
+      `);
     } catch (e) { /* ignore */ }
     try {
       await pool.query("ALTER TABLE timesheets ADD COLUMN IF NOT EXISTS invoice_id text REFERENCES invoices(id)");
@@ -346,26 +366,26 @@ async function initDb() {
     const row = sqliteDb.prepare('SELECT id FROM users WHERE role = ? LIMIT 1').get('owner');
     if (!row) {
   const id = crypto.randomUUID();
-      sqliteDb.prepare('INSERT INTO users(id,name,email,password,role) VALUES(?,?,?,?,?)').run(id, 'Owner', ownerEmail, bcrypt.hashSync(ownerPw, 8), 'owner');
+      sqliteDb.prepare('INSERT INTO users(id,name,email,password,role,joined_at) VALUES(?,?,?,?,?,?)').run(id, 'Owner', ownerEmail, bcrypt.hashSync(ownerPw, 8), 'owner', new Date().toISOString());
       console.log('Seeded owner ->', { email: ownerEmail, id });
     }
     const crow = sqliteDb.prepare('SELECT id FROM users WHERE role = ? LIMIT 1').get('client');
     if (!crow) {
   const id = crypto.randomUUID();
-      sqliteDb.prepare('INSERT INTO users(id,name,email,password,role) VALUES(?,?,?,?,?)').run(id, 'Client A', clientEmail, bcrypt.hashSync(clientPw, 8), 'client');
+      sqliteDb.prepare('INSERT INTO users(id,name,email,password,role,joined_at) VALUES(?,?,?,?,?,?)').run(id, 'Client A', clientEmail, bcrypt.hashSync(clientPw, 8), 'client', new Date().toISOString());
       console.log('Seeded client ->', { email: clientEmail, id });
     }
   } else {
     const ownerRes = await pool.query('SELECT id FROM users WHERE role=$1 LIMIT 1', ['owner']);
     if (ownerRes.rowCount === 0) {
       const id = crypto.randomUUID();
-      await pool.query('INSERT INTO users(id,name,email,password,role) VALUES($1,$2,$3,$4,$5)', [id, 'Owner', ownerEmail, bcrypt.hashSync(ownerPw, 8), 'owner']);
+      await pool.query('INSERT INTO users(id,name,email,password,role,joined_at) VALUES($1,$2,$3,$4,$5,$6)', [id, 'Owner', ownerEmail, bcrypt.hashSync(ownerPw, 8), 'owner', new Date().toISOString()]);
       console.log('Seeded owner ->', { email: ownerEmail, id });
     }
     const clientRes = await pool.query('SELECT id FROM users WHERE role=$1 LIMIT 1', ['client']);
     if (clientRes.rowCount === 0) {
       const id = crypto.randomUUID();
-      await pool.query('INSERT INTO users(id,name,email,password,role) VALUES($1,$2,$3,$4,$5)', [id, 'Client A', clientEmail, bcrypt.hashSync(clientPw, 8), 'client']);
+      await pool.query('INSERT INTO users(id,name,email,password,role,joined_at) VALUES($1,$2,$3,$4,$5,$6)', [id, 'Client A', clientEmail, bcrypt.hashSync(clientPw, 8), 'client', new Date().toISOString()]);
       console.log('Seeded client ->', { email: clientEmail, id });
     }
   }
@@ -607,11 +627,11 @@ async function authMiddleware(req, res, next) {
   try {
     const payload = jwt.verify(token, JWT_SECRET);
     if (useSqlite) {
-      const row = sqliteDb.prepare('SELECT id,name,email,role,client_id FROM users WHERE id = ?').get(payload.id);
+      const row = sqliteDb.prepare('SELECT id,name,email,role,client_id,joined_at FROM users WHERE id = ?').get(payload.id);
       if (!row) return res.status(401).json({ error: 'Invalid user' });
       req.user = row;
     } else {
-      const userRes = await pool.query('SELECT id,name,email,role,client_id FROM users WHERE id=$1', [payload.id]);
+      const userRes = await pool.query('SELECT id,name,email,role,client_id,joined_at FROM users WHERE id=$1', [payload.id]);
       if (userRes.rowCount === 0) return res.status(401).json({ error: 'Invalid user' });
       req.user = userRes.rows[0];
     }
@@ -702,24 +722,24 @@ app.post('/api/users', authMiddleware, async (req, res) => {
   try {
     // If user exists, return it (idempotent)
     if (useSqlite) {
-      const existing = sqliteDb.prepare('SELECT id,name,email,role FROM users WHERE email = ?').get(email);
+      const existing = sqliteDb.prepare('SELECT id,name,email,role,client_id,joined_at FROM users WHERE email = ?').get(email);
       if (existing) return res.json(existing);
       const hashed = bcrypt.hashSync(password, 8);
       const id = crypto.randomUUID();
-  sqliteDb.prepare('INSERT INTO users(id,name,email,password,role,client_id) VALUES(?,?,?,?,?,?)').run(id, name, email, hashed, role, clientId || null);
+  sqliteDb.prepare('INSERT INTO users(id,name,email,password,role,client_id,joined_at) VALUES(?,?,?,?,?,?,?)').run(id, name, email, hashed, role, clientId || null, new Date().toISOString());
       // Send invitation email in the background so user creation is not blocked by SMTP/test-mail latency.
       sendEmail(email, 'You have been invited to Mega Construct', `Hello ${name},\n\nAn account was created for you. Email: ${email}\nPlease use the password provided by the owner to login. You can reset your password if needed.`)
         .catch(e => console.error('Invitation email failed', e));
-      return res.json({ id, name, email, role });
+      return res.json({ id, name, email, role, client_id: clientId || null, joined_at: new Date().toISOString() });
     } else {
-      const existingRes = await pool.query('SELECT id,name,email,role FROM users WHERE email=$1', [email]);
+      const existingRes = await pool.query('SELECT id,name,email,role,client_id,joined_at FROM users WHERE email=$1', [email]);
       if (existingRes.rowCount > 0) return res.json(existingRes.rows[0]);
       const hashed = bcrypt.hashSync(password, 8);
       const id = crypto.randomUUID();
-  await pool.query('INSERT INTO users(id,name,email,password,role,client_id) VALUES($1,$2,$3,$4,$5,$6)', [id, name, email, hashed, role, clientId || null]);
+  await pool.query('INSERT INTO users(id,name,email,password,role,client_id,joined_at) VALUES($1,$2,$3,$4,$5,$6,$7)', [id, name, email, hashed, role, clientId || null, new Date().toISOString()]);
       sendEmail(email, 'You have been invited to Mega Construct', `Hello ${name},\n\nAn account was created for you. Email: ${email}\nPlease use the password provided by the owner to login. You can reset your password if needed.`)
         .catch(e => console.error('Invitation email failed', e));
-      return res.json({ id, name, email, role });
+      return res.json({ id, name, email, role, client_id: clientId || null, joined_at: new Date().toISOString() });
     }
   } catch (e) {
     console.error(e);
@@ -732,10 +752,10 @@ app.get('/api/users', authMiddleware, async (req, res) => {
   if (req.user.role !== 'owner') return res.status(403).json({ error: 'Forbidden' });
   try {
     if (useSqlite) {
-      const rows = sqliteDb.prepare('SELECT id,name,email,role,client_id FROM users').all();
+      const rows = sqliteDb.prepare('SELECT id,name,email,role,client_id,joined_at FROM users').all();
       return res.json(rows);
     }
-    const r = await pool.query('SELECT id,name,email,role,client_id FROM users');
+    const r = await pool.query('SELECT id,name,email,role,client_id,joined_at FROM users');
     res.json(r.rows);
   } catch (e) {
     console.error(e);
@@ -747,10 +767,10 @@ app.get('/api/users', authMiddleware, async (req, res) => {
 app.get('/api/me', authMiddleware, async (req, res) => {
   try {
     if (useSqlite) {
-      const u = sqliteDb.prepare('SELECT id,name,email,role,client_id FROM users WHERE id = ?').get(req.user.id);
+      const u = sqliteDb.prepare('SELECT id,name,email,role,client_id,joined_at FROM users WHERE id = ?').get(req.user.id);
       return res.json(u);
     }
-    const r = await pool.query('SELECT id,name,email,role,client_id FROM users WHERE id=$1', [req.user.id]);
+    const r = await pool.query('SELECT id,name,email,role,client_id,joined_at FROM users WHERE id=$1', [req.user.id]);
     if (r.rowCount === 0) return res.status(404).json({ error: 'Not found' });
     res.json(r.rows[0]);
   } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
@@ -763,9 +783,9 @@ app.delete('/api/users/:id', authMiddleware, async (req, res) => {
   try {
     // Protect owner deletion
     let userRow;
-    if (useSqlite) userRow = sqliteDb.prepare('SELECT id,name,email,role,client_id FROM users WHERE id = ?').get(id);
+    if (useSqlite) userRow = sqliteDb.prepare('SELECT id,name,email,role,client_id,joined_at FROM users WHERE id = ?').get(id);
     else {
-      const r = await pool.query('SELECT id,name,email,role,client_id FROM users WHERE id=$1', [id]);
+      const r = await pool.query('SELECT id,name,email,role,client_id,joined_at FROM users WHERE id=$1', [id]);
       userRow = r.rowCount ? r.rows[0] : null;
     }
     if (!userRow) return res.status(404).json({ error: 'Not found' });
@@ -1013,7 +1033,19 @@ app.get('/api/timesheets/client/history', authMiddleware, async (req, res) => {
       const out = rows.map(r => ({ ...r, staff_name: (users[r.staff_id] && users[r.staff_id].name) || null, staff_email: (users[r.staff_id] && users[r.staff_id].email) || null }));
       return res.json(out);
     }
-    const q = `SELECT t.*, u.name as staff_name, u.email as staff_email FROM timesheets t LEFT JOIN users u ON u.id = t.staff_id WHERE t.client_id=$1 AND t.status = ANY($2::text[]) ORDER BY COALESCE(t.approved_at, t.returned_at, t.invoiced_at, t.updated_at, t.created_at) DESC`;
+    const q = `SELECT t.*, u.name as staff_name, u.email as staff_email,
+      ev.event_type as latest_client_event_type, ev.comment as latest_client_event_comment, ev.created_at as latest_client_event_at
+      FROM timesheets t
+      LEFT JOIN users u ON u.id = t.staff_id
+      LEFT JOIN LATERAL (
+        SELECT event_type, comment, created_at
+        FROM timesheet_events e
+        WHERE e.timesheet_id = t.id AND e.actor_id = $1 AND e.event_type IN ('approved', 'returned')
+        ORDER BY e.created_at DESC
+        LIMIT 1
+      ) ev ON true
+      WHERE t.client_id=$1 AND t.status = ANY($2::text[])
+      ORDER BY COALESCE(t.approved_at, t.returned_at, t.invoiced_at, t.updated_at, t.created_at) DESC`;
     const r = await pool.query(q, [req.user.id, statuses]);
     res.json(r.rows);
   } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
@@ -1068,10 +1100,10 @@ app.get('/api/clients', authMiddleware, async (req, res) => {
   if (!['staff','owner','client'].includes(req.user.role)) return res.status(403).json({ error: 'Forbidden' });
   try {
     if (useSqlite) {
-      const rows = sqliteDb.prepare("SELECT id,name,email FROM users WHERE role = 'client'").all();
+      const rows = sqliteDb.prepare("SELECT id,name,email,joined_at FROM users WHERE role = 'client'").all();
       return res.json(rows);
     }
-    const r = await pool.query("SELECT id,name,email FROM users WHERE role = 'client'");
+    const r = await pool.query("SELECT id,name,email,joined_at FROM users WHERE role = 'client'");
     res.json(r.rows);
   } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
 });
@@ -1081,10 +1113,10 @@ app.get('/api/staffs', authMiddleware, async (req, res) => {
   if (!['owner','staff','client'].includes(req.user.role)) return res.status(403).json({ error: 'Forbidden' });
   try {
     if (useSqlite) {
-      const rows = sqliteDb.prepare("SELECT id,name,email FROM users WHERE role = 'staff'").all();
+      const rows = sqliteDb.prepare("SELECT id,name,email,joined_at FROM users WHERE role = 'staff'").all();
       return res.json(rows);
     }
-    const r = await pool.query("SELECT id,name,email FROM users WHERE role = 'staff'");
+    const r = await pool.query("SELECT id,name,email,joined_at FROM users WHERE role = 'staff'");
     res.json(r.rows);
   } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
 });

@@ -100,7 +100,7 @@ export default function OwnerPage({ token }) {
     if (!invoicePreview || invoicePreview.count === 0) return alert('Preview the invoice first and confirm it has approved uninvoiced timesheets')
     try {
       const r = await axios.post(`${API}/api/invoices/generate`, invoicePayload(), { headers: headers() })
-      alert('Draft invoice generated')
+      alert('Invoice generated')
       setInvoicePreview(null); setSelectedInvoice(r.data); setShowGenerateInvoice(false); setShowInvoiceDetail(true)
       loadInvoices(); loadTimes(viewMode); loadSummary()
     } catch (e) { console.error('generateInvoice', e); alert(e.response?.data?.error || 'Invoice generation failed') }
@@ -157,7 +157,7 @@ export default function OwnerPage({ token }) {
       <input placeholder="overtime weekday hourly rate" value={overtimeWeekRate} onChange={e=>{ setOvertimeWeekRate(e.target.value); setInvoicePreview(null) }} />
       <input placeholder="overtime weekend hourly rate" value={overtimeWeekendRate} onChange={e=>{ setOvertimeWeekendRate(e.target.value); setInvoicePreview(null) }} />
       <input placeholder="overtime bank holiday hourly rate" value={overtimeBankHolidayRate} onChange={e=>{ setOvertimeBankHolidayRate(e.target.value); setInvoicePreview(null) }} />
-      <div className="button-row"><button onClick={previewInvoice}>Preview invoice</button><button onClick={generateInvoice}>Generate draft invoice</button></div>
+      <div className="button-row"><button onClick={previewInvoice}>Preview invoice</button><button onClick={generateInvoice}>Generate invoice</button></div>
       {invoicePreview && <div className="inline-panel"><h5>Invoice preview</h5>{invoicePreview.count === 0 ? <p>{invoicePreview.message || 'No approved uninvoiced timesheets found.'}</p> : <><p>{invoicePreview.count} line(s), {n(invoicePreview.totalHours)}h standard, {n(invoicePreview.totalOvertimeWeekHours)}h weekday OT, {n(invoicePreview.totalOvertimeWeekendHours)}h weekend OT, {n(invoicePreview.totalOvertimeBankHolidayHours)}h bank holiday OT, {gbp(invoicePreview.totalAmount)}</p><ul className="record-list compact-list">{previewLines.map(l => <li key={l.timesheet_id}>{lineText(l)}</li>)}</ul></>}</div>}
     </div>
   )
@@ -179,22 +179,22 @@ export default function OwnerPage({ token }) {
         <div className="section-heading"><div><h4>People</h4><p>Owners are kept out of operational user management. Clients and staff show their assignments.</p></div><div className="button-row"><button onClick={()=>setShowCreateUser(true)}>Create user</button><button className="secondary" onClick={loadUsers}>Refresh users</button></div></div>
         {ownerUsers.length > 0 && <p className="notice">Owner account is excluded from the operational lists: {ownerUsers.map(o => o.email).join(', ')}</p>}
         <div className="tabs compact-tabs"><button className={peopleTab === 'clients' ? 'active' : 'secondary'} onClick={()=>setPeopleTab('clients')}>Clients</button><button className={peopleTab === 'staff' ? 'active' : 'secondary'} onClick={()=>setPeopleTab('staff')}>Staff</button></div>
-        {peopleTab === 'clients' && <ul className="record-list">{clientUsers.map(c => <li key={c.id}><strong>{c.name}</strong> ({c.email}) — {staffByClient[c.id]?.length || 0} assigned staff{staffByClient[c.id]?.length > 0 && <div className="chips">{staffByClient[c.id].map(s => <span key={s.id}>{s.name} ({s.email})</span>)}</div>}<button onClick={()=>deleteUser(c.id)}>Delete client</button></li>)}</ul>}
-        {peopleTab === 'staff' && <ul className="record-list">{staffUsers.map(s => <li key={s.id}><strong>{s.name}</strong> ({s.email}) — assigned client: {userMap[s.client_id]?.name || 'Unassigned'}{!userMap[s.client_id] && <span className="badge danger-badge">needs assignment</span>}<button onClick={()=>deleteUser(s.id)}>Delete staff</button></li>)}{unassignedStaff.length === 0 && staffUsers.length === 0 && <li>No staff users.</li>}</ul>}
+        {peopleTab === 'clients' && <ul className="record-list">{clientUsers.map(c => <li key={c.id}><strong>{c.name}</strong> ({c.email}) — Joined: {cleanDate(c.joined_at) || 'n/a'} — {staffByClient[c.id]?.length || 0} assigned staff{staffByClient[c.id]?.length > 0 && <div className="chips">{staffByClient[c.id].map(s => <span key={s.id}>{s.name} ({s.email})</span>)}</div>}<button onClick={()=>deleteUser(c.id)}>Delete client</button></li>)}</ul>}
+        {peopleTab === 'staff' && <ul className="record-list">{staffUsers.map(s => <li key={s.id}><strong>{s.name}</strong> ({s.email}) — Joined: {cleanDate(s.joined_at) || 'n/a'} — assigned client: {userMap[s.client_id]?.name || 'Unassigned'}{!userMap[s.client_id] && <span className="badge danger-badge">needs assignment</span>}<button onClick={()=>deleteUser(s.id)}>Delete staff</button></li>)}{unassignedStaff.length === 0 && staffUsers.length === 0 && <li>No staff users.</li>}</ul>}
       </section>}
 
       {activeTab === 'timesheets' && <section>
-        <div className="section-heading"><div><h4>Timesheets</h4><p>Review pending or approved-uninvoiced rows. Invoiced rows are locked to invoices.</p></div><div className="button-row"><button onClick={()=>{ setViewMode('pending'); loadTimes('pending') }}>Load pending</button><button className="secondary" onClick={()=>{ setViewMode('approved'); loadTimes('approved') }}>Load approved uninvoiced</button><button className="danger" onClick={()=>{ if (confirm('Delete ALL timesheets? This is permanent.')) { axios.delete(`${API}/api/timesheets`, { headers: headers() }).then(()=>{ loadTimes(viewMode); loadSummary() }).catch(()=>alert('Failed')) } }}>Delete all timesheets</button></div></div>
+        <div className="section-heading"><div><h4>Timesheets</h4><p>Review pending or approved rows. Invoiced rows are locked to invoices.</p></div><div className="button-row"><button onClick={()=>{ setViewMode('pending'); loadTimes('pending') }}>Pending</button><button className="secondary" onClick={()=>{ setViewMode('approved'); loadTimes('approved') }}>Approved</button></div></div>
         {Object.keys(grouped).length === 0 ? <p>No timesheets</p> : Object.keys(grouped).map(staffId => <div key={staffId} className="group-block"><h5>Staff: {userMap[staffId]?.name || staffId}</h5><ul className="record-list">{grouped[staffId].map(t => <li key={t.id}><strong>{cleanDate(t.date)}</strong> — {n(t.hours)}h standard — {otText(t)} — {t.status} — Client: {userMap[t.client_id]?.name || t.client_id}<div>{t.notes}</div>{t.return_reason && <div><strong>Return reason:</strong> {t.return_reason}</div>}<button onClick={()=>deleteTimesheet(t.id)}>Delete</button></li>)}</ul></div>)}
       </section>}
 
       {activeTab === 'invoices' && <section>
-        <div className="section-heading"><div><h4>Invoices</h4><p>Invoice generation and invoice detail open in modal pages to keep this tab clean.</p></div><div className="button-row"><button onClick={()=>setShowGenerateInvoice(true)}>Generate draft invoice</button><button className="secondary" onClick={loadInvoices}>Refresh invoices</button></div></div>
+        <div className="section-heading"><div><h4>Invoices</h4><p>Invoice generation and invoice detail open in modal pages to keep this tab clean.</p></div><div className="button-row"><button onClick={()=>setShowGenerateInvoice(true)}>Generate invoice</button><button className="secondary" onClick={loadInvoices}>Refresh invoices</button></div></div>
         {invoices.length === 0 ? <p>No invoices yet</p> : <ul className="record-list">{invoices.map(i => <li key={i.id}><strong>{i.invoice_number}</strong> — {i.client_name || i.client_id} — {cleanDate(i.period_start)} to {cleanDate(i.period_end)} — {n(i.total_hours)}h — {gbp(i.total_amount)} — {i.status}<button onClick={()=>viewInvoice(i.id)}>View detail</button></li>)}</ul>}
       </section>}
 
       {showCreateUser && <Modal title="Create user" onClose={()=>setShowCreateUser(false)}>{createUserForm}</Modal>}
-      {showGenerateInvoice && <Modal title="Generate draft invoice" onClose={()=>setShowGenerateInvoice(false)} wide>{invoiceGenerator}</Modal>}
+      {showGenerateInvoice && <Modal title="Generate invoice" onClose={()=>setShowGenerateInvoice(false)} wide>{invoiceGenerator}</Modal>}
       {showInvoiceDetail && selectedInvoice && <Modal title="Invoice detail" onClose={()=>setShowInvoiceDetail(false)} wide>{invoiceDetail}</Modal>}
     </div>
   )
