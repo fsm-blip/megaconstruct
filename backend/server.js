@@ -562,19 +562,41 @@ async function backfillTimesheetDomain() {
     return;
   }
   await pool.query(`
-    UPDATE timesheets
-    SET period_start = COALESCE(period_start, date),
-        period_end = COALESCE(period_end, date),
-        submitted_at = COALESCE(submitted_at, created_at),
-        updated_at = COALESCE(updated_at, created_at, $1::timestamptz),
-        invoiced_at = CASE WHEN status = 'invoiced' THEN COALESCE(invoiced_at, approved_at, created_at, $1::timestamptz) ELSE invoiced_at END
+    WITH parsed AS (
+      SELECT id,
+             CASE
+               WHEN date::text ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN date::date
+               WHEN date::text ~ '^\\d{1,2}/\\d{1,2}/\\d{4}$' THEN to_date(date::text, 'DD/MM/YYYY')
+               ELSE NULL
+             END AS work_date
+      FROM timesheets
+      WHERE date IS NOT NULL
+    )
+    UPDATE timesheets t
+    SET period_start = COALESCE(t.period_start, p.work_date),
+        period_end = COALESCE(t.period_end, p.work_date),
+        submitted_at = COALESCE(t.submitted_at, t.created_at::timestamptz),
+        updated_at = COALESCE(t.updated_at, t.created_at::timestamptz, $1::timestamptz),
+        invoiced_at = CASE WHEN t.status = 'invoiced' THEN COALESCE(t.invoiced_at, t.approved_at::timestamptz, t.created_at::timestamptz, $1::timestamptz) ELSE t.invoiced_at END
+    FROM parsed p
+    WHERE t.id = p.id AND p.work_date IS NOT NULL
   `, [now]);
   await pool.query(`
+    WITH parsed AS (
+      SELECT t.*,
+             CASE
+               WHEN t.date::text ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN t.date::date
+               WHEN t.date::text ~ '^\\d{1,2}/\\d{1,2}/\\d{4}$' THEN to_date(t.date::text, 'DD/MM/YYYY')
+               ELSE NULL
+             END AS work_date
+      FROM timesheets t
+      WHERE t.date IS NOT NULL
+    )
     INSERT INTO timesheet_entries(id,timesheet_id,work_date,hours,break_minutes,notes,created_at,updated_at)
-    SELECT md5(random()::text || clock_timestamp()::text), t.id, t.date, COALESCE(t.hours, 0), 0, COALESCE(t.notes, ''), COALESCE(t.created_at, $1::timestamptz), COALESCE(t.updated_at, t.created_at, $1::timestamptz)
-    FROM timesheets t
-    WHERE t.date IS NOT NULL
-      AND NOT EXISTS (SELECT 1 FROM timesheet_entries e WHERE e.timesheet_id = t.id)
+    SELECT md5(random()::text || clock_timestamp()::text), p.id, p.work_date, COALESCE(p.hours, 0), 0, COALESCE(p.notes, ''), COALESCE(p.created_at::timestamptz, $1::timestamptz), COALESCE(p.updated_at::timestamptz, p.created_at::timestamptz, $1::timestamptz)
+    FROM parsed p
+    WHERE p.work_date IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM timesheet_entries e WHERE e.timesheet_id = p.id)
   `, [now]);
 }
 
