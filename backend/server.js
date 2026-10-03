@@ -1163,7 +1163,7 @@ app.post('/api/timesheets/:id/submit', authMiddleware, async (req, res) => {
     if (!['draft', 'returned'].includes(ts.status)) return res.status(400).json({ error: 'Only draft or returned timesheets can be submitted' });
     if (!entryCount) return res.status(400).json({ error: 'Add at least one entry before submitting' });
     if (useSqlite) sqliteDb.prepare('UPDATE timesheets SET status = ?, submitted_at = ?, returned_at = NULL, return_reason = NULL, updated_at = ? WHERE id = ?').run('submitted', now, now, id);
-    else await pool.query('UPDATE timesheets SET status=$1, submitted_at=$2, returned_at=NULL, return_reason=NULL, updated_at=$2 WHERE id=$3', ['submitted', now, id]);
+    else await pool.query('UPDATE timesheets SET status=$1, submitted_at=$2, returned_at=NULL, return_reason=NULL, updated_at=$3::timestamptz WHERE id=$4', ['submitted', now, now, id]);
     await logTimesheetEvent(id, req.user.id, 'submitted', ts.status, 'submitted', 'Staff submitted timesheet.');
     res.json({ ok: true, status: 'submitted' });
   } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
@@ -1248,7 +1248,7 @@ app.post('/api/timesheets/:id/return', authMiddleware, async (req, res) => {
       await logTimesheetEvent(id, req.user.id, 'returned', ts.status, 'returned', reason);
       return res.json(sqliteDb.prepare('SELECT * FROM timesheets WHERE id = ?').get(id));
     }
-    await pool.query('UPDATE timesheets SET status=$1, returned_at=$2, return_reason=$3, updated_at=$2 WHERE id=$4', ['returned', now, reason, id]);
+    await pool.query('UPDATE timesheets SET status=$1, returned_at=$2, return_reason=$3, updated_at=$4::timestamptz WHERE id=$5', ['returned', now, reason, now, id]);
     await logTimesheetEvent(id, req.user.id, 'returned', ts.status, 'returned', reason);
     const updated = await pool.query('SELECT * FROM timesheets WHERE id=$1', [id]);
     res.json(updated.rows[0]);
@@ -1320,7 +1320,7 @@ app.post('/api/timesheets/:id/approve', authMiddleware, async (req, res) => {
     if (tsRes.rowCount === 0) return res.status(404).json({ error: 'Timesheet not found' });
     if (tsRes.rows[0].status !== 'submitted') return res.status(400).json({ error: 'Only submitted timesheets can be approved' });
     const approvedAt = new Date().toISOString();
-    await pool.query('UPDATE timesheets SET status=$1, approved_at=$2, return_reason=NULL, updated_at=$2 WHERE id=$3', ['approved', approvedAt, id]);
+    await pool.query('UPDATE timesheets SET status=$1, approved_at=$2, return_reason=NULL, updated_at=$3::timestamptz WHERE id=$4', ['approved', approvedAt, approvedAt, id]);
     await logTimesheetEvent(id, req.user.id, 'approved', tsRes.rows[0].status, 'approved', 'Client approved timesheet.');
     const updated = await pool.query('SELECT * FROM timesheets WHERE id=$1', [id]);
     sendOwnerNotification(updated.rows[0]);
@@ -1528,7 +1528,7 @@ app.post('/api/invoices/generate', authMiddleware, async (req, res) => {
     for (const line of preview.lines) {
       await pool.query('INSERT INTO invoice_lines(id,invoice_id,timesheet_id,staff_id,work_date,hours,hourly_rate,overtime_week_hours,overtime_week_rate,overtime_weekend_hours,overtime_weekend_rate,overtime_bank_holiday_hours,overtime_bank_holiday_rate,line_amount,notes,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)', [crypto.randomUUID(), id, line.timesheet_id, line.staff_id, line.work_date, line.hours, line.hourly_rate, line.overtime_week_hours, line.overtime_week_rate, line.overtime_weekend_hours, line.overtime_weekend_rate, line.overtime_bank_holiday_hours, line.overtime_bank_holiday_rate, line.line_amount, line.notes, createdAt]);
     }
-    await pool.query('UPDATE timesheets SET status=$1, invoice_id=$2, invoiced_at=$3, updated_at=$3 WHERE id = ANY($4)', ['invoiced', id, createdAt, rows.map(r => r.id)]);
+    await pool.query('UPDATE timesheets SET status=$1, invoice_id=$2, invoiced_at=$3, updated_at=$4::timestamptz WHERE id = ANY($5)', ['invoiced', id, createdAt, createdAt, rows.map(r => r.id)]);
     for (const r of rows) {
       await logTimesheetEvent(r.id, req.user.id, 'invoiced', r.status, 'invoiced', `Locked to invoice ${number}.`);
     }
