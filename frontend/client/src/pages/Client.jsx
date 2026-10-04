@@ -4,7 +4,6 @@ const API = import.meta.env.VITE_API_URL || ''
 const cleanDate = value => value ? String(value).slice(0, 10) : ''
 const cleanDateTime = value => value ? new Date(value).toLocaleString() : ''
 const h = value => Number(value || 0)
-const gbp = value => `£${Number(value || 0).toFixed(2)}`
 
 export default function ClientPage({ token }) {
   const [list, setList] = useState([])
@@ -49,7 +48,7 @@ export default function ClientPage({ token }) {
     if (!reason || !reason.trim()) return
     try {
       await axios.post(`${API}/api/timesheets/${id}/return`, { reason }, { headers: { Authorization: `Bearer ${token}` } })
-      alert('Returned to staff')
+      alert('Returned to submitter')
       load(); loadHistory()
     } catch (e) { alert(e.response?.data?.error || 'Return failed') }
   }
@@ -60,7 +59,7 @@ export default function ClientPage({ token }) {
   }
 
   function timeSummary(t) {
-    if ((t.pricing_model || t.pricingModel) === 'weekly_shift') return `${cleanDate(t.period_start || t.periodStart || t.date)} to ${cleanDate(t.period_end || t.periodEnd)} — ${h(t.shift_count || t.shiftCount || t.hours)} shift(s), ${gbp(t.calculated_amount || t.calculatedAmount)}`
+    if ((t.pricing_model || t.pricingModel) === 'weekly_shift') return `${cleanDate(t.period_start || t.periodStart || t.date)} to ${cleanDate(t.period_end || t.periodEnd)} — ${h(t.shift_count || t.shiftCount || t.hours)} shift(s)`
     return `${h(t.hours)}h standard, ${h(t.overtime_week_hours || t.overtimeWeekHours)}h OT weekday, ${h(t.overtime_weekend_hours || t.overtimeWeekendHours)}h OT weekend, ${h(t.overtime_bank_holiday_hours || t.overtimeBankHolidayHours)}h OT bank holiday`
   }
 
@@ -69,7 +68,7 @@ export default function ClientPage({ token }) {
       <div className="section-heading">
         <div>
           <h3>Client approvals</h3>
-          <p>Approve or return submitted staff timesheets.</p>
+          <p>Approve or return submitted interim/consultant timesheets.</p>
         </div>
         <button className="secondary" onClick={()=>{ load(); loadHistory() }}>Refresh</button>
       </div>

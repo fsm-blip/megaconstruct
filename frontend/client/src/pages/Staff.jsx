@@ -45,7 +45,7 @@ export default function StaffPage({ token, user }) {
   async function loadClients() {
     const res = await axios.get(`${API}/api/clients`, { headers: { Authorization: `Bearer ${token}` } })
     const assignedClientId = user?.client_id || user?.clientId
-    const visibleClients = assignedClientId ? res.data.filter(c => c.id === assignedClientId) : []
+    const visibleClients = user?.role === 'staff' ? (assignedClientId ? res.data.filter(c => c.id === assignedClientId) : []) : res.data
     setClients(visibleClients)
     if (visibleClients[0]) setClientId(visibleClients[0].id)
   }
@@ -111,7 +111,7 @@ export default function StaffPage({ token, user }) {
 
   function timesheetLabel(t) {
     if ((t.pricing_model || t.pricingModel) === 'weekly_shift') {
-      return `${cleanDate(t.period_start || t.periodStart || t.date)} to ${cleanDate(t.period_end || t.periodEnd)} — ${Number(t.shift_count || t.shiftCount || t.hours || 0)} shift(s) — ${gbp(t.calculated_amount || t.calculatedAmount)} — ${t.status}`
+      return `${cleanDate(t.period_start || t.periodStart || t.date)} to ${cleanDate(t.period_end || t.periodEnd)} — ${Number(t.shift_count || t.shiftCount || t.hours || 0)} shift(s) — ${t.status}`
     }
     return `${cleanDate(t.date)} — ${t.hours}h standard — ${t.status}`
   }
@@ -120,12 +120,12 @@ export default function StaffPage({ token, user }) {
     <div className="panel-card">
       <div className="section-heading">
         <div>
-          <h3>Staff weekly timesheet</h3>
-          <p>{editingId ? 'Edit the returned weekly timesheet and resubmit it.' : 'Submit a weekly timesheet. Rate is £495 per day with shift multipliers applied automatically.'}</p>
+          <h3>{user?.role === 'staff' ? 'Interim weekly timesheet' : 'Consultant weekly timesheet'}</h3>
+          <p>{editingId ? 'Edit the returned weekly timesheet and resubmit it.' : 'Submit a weekly timesheet. The owner will see calculated prices; submitters only enter worked shifts.'}</p>
         </div>
       </div>
 
-      {clients.length === 0 ? <p className="notice danger">No assigned client found. Ask the owner to assign this staff account to a client.</p> : (
+      {clients.length === 0 ? <p className="notice danger">No assigned client found. Ask the owner to assign this interim account to a client.</p> : (
         <div className="form-grid">
           {!editingId && (
             <label>Assigned client
@@ -137,7 +137,7 @@ export default function StaffPage({ token, user }) {
           <label>Week start<input type="date" value={weekStart} onChange={e=>{ setWeekStart(e.target.value); setShifts({}) }} /></label>
           <div className="span-2 inline-panel">
             <h4>Weekly shifts</h4>
-            <p>Daily rate: {gbp(dayRate)}. Weeknight and Saturday day = x1.5. Sunday day, Saturday night, Sunday night, bank holiday day/night = x2.</p>
+            <p>Weeknight and Saturday day = x1.5. Sunday day, Saturday night, Sunday night, bank holiday day/night = x2.</p>
             {weekDates.length === 0 ? <p>Select a week start to enter shifts.</p> : weekDates.map(date => (
               <label key={date}>{date}
                 <select value={shifts[date] || ''} onChange={e=>setShift(date, e.target.value)}>
@@ -149,7 +149,7 @@ export default function StaffPage({ token, user }) {
                 </select>
               </label>
             ))}
-            <p><strong>Total:</strong> {selectedRows.length} shift(s), {gbp(totalAmount)}</p>
+            <p><strong>Selected:</strong> {selectedRows.length} shift(s)</p>
           </div>
           <label className="span-2">Notes<textarea placeholder="notes" value={notes} onChange={e=>setNotes(e.target.value)} /></label>
           <div className="button-row span-2">

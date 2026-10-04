@@ -18,7 +18,7 @@ function Login({ onLogin, expectedRole }) {
     e.preventDefault()
     try {
       const res = await axios.post(`${API}/api/login`, { email: email.trim(), password: password.trim() })
-      if (res.data.user.role !== role) {
+      if (res.data.user.role !== role && !(role === 'consultant' && res.data.user.role === 'owner')) {
         alert(`This account is ${res.data.user.role}, not ${role}. Please choose the correct role.`)
         return
       }
@@ -44,7 +44,8 @@ function Login({ onLogin, expectedRole }) {
       <input placeholder="email" value={email} onChange={e=>setEmail(e.target.value)} />
       <input placeholder="password" type="password" value={password} onChange={e=>setPassword(e.target.value)} />
       <select value={role} onChange={e=>setRole(e.target.value)}>
-        <option value="staff">Staff</option>
+        <option value="staff">Interim</option>
+        <option value="consultant">Consultant</option>
         <option value="client">Client</option>
         <option value="owner">Owner</option>
       </select>
@@ -65,7 +66,8 @@ function Header({ onSelectRole }) {
       <nav className="top-links">
         <a href="#" onClick={e=>{e.preventDefault(); onSelectRole('owner')}}>Owner</a>
         <a href="#" style={{marginLeft:12}} onClick={e=>{e.preventDefault(); onSelectRole('client')}}>Client</a>
-        <a href="#" style={{marginLeft:12}} onClick={e=>{e.preventDefault(); onSelectRole('staff')}}>Staff</a>
+        <a href="#" style={{marginLeft:12}} onClick={e=>{e.preventDefault(); onSelectRole('staff')}}>Interim</a>
+        <a href="#" style={{marginLeft:12}} onClick={e=>{e.preventDefault(); onSelectRole('consultant')}}>Consultant</a>
       </nav>
     </header>
   )
@@ -78,9 +80,9 @@ function Landing({ onLogin, onSelectRole, selectedRole }) {
       <div style={{display:'flex',gap:16}}>
         <div style={{flex:2}}>
           <h1>Mega Construct Portal</h1>
-          <p>Welcome to Mega Construct. We provide high-quality temporary construction staff to clients across the UK. Use the portal to submit timesheets, approve work, and manage payments.</p>
+          <p>Welcome to Mega Construct. We provide high-quality temporary construction interim workers to clients across the UK. Use the portal to submit timesheets, approve work, and manage payments.</p>
           <ul>
-            <li>Fast temporary staff onboarding</li>
+            <li>Fast interim onboarding</li>
             <li>Client approvals via email</li>
             <li>Owner notifications and payment tracking</li>
           </ul>
@@ -93,7 +95,7 @@ function Landing({ onLogin, onSelectRole, selectedRole }) {
           </div> : (
             <div className="card">
               <h4>Sign in</h4>
-              <p>Choose Owner / Client / Staff from the top-right to open the login form.</p>
+              <p>Choose Owner / Client / Interim / Consultant from the top-right to open the login form.</p>
             </div>
           )}
         </div>
@@ -318,8 +320,12 @@ export default function App() {
             </div>
           </div>
           {user.role === 'staff' && <StaffPage token={token} user={user} />}
+          {user.role === 'consultant' && <StaffPage token={token} user={user} />}
           {user.role === 'client' && <ClientPage token={token} />}
-          {user.role === 'owner' && <OwnerPage token={token} />}
+          {user.role === 'owner' && <>
+            <OwnerPage token={token} />
+            <StaffPage token={token} user={user} />
+          </>}
         </div>
       )}
     </div>
