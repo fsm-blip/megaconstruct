@@ -133,8 +133,8 @@ export default function OwnerPage({ token }) {
   const summaryValue = (group, key, field = 'count') => Number((summary?.[group] || []).find(r => r.status === key || r.role === key)?.[field] || 0)
   const managedUserCount = manageableUsers.length
   const totalInvoiceAmount = (summary?.invoices || []).reduce((sum, r) => sum + Number(r.amount || 0), 0)
-  const otText = t => `${n(t.overtime_week_hours || t.overtimeWeekHours)}h weekday OT, ${n(t.overtime_weekend_hours || t.overtimeWeekendHours)}h weekend OT, ${n(t.overtime_bank_holiday_hours || t.overtimeBankHolidayHours)}h bank holiday OT`
-  const lineText = l => `${cleanDate(l.work_date)} - ${l.staff_name || l.staff_id} - ${n(l.hours)}h x ${gbp(l.hourly_rate)} + OT ${n(l.overtime_week_hours)}h/${gbp(l.overtime_week_rate)}, ${n(l.overtime_weekend_hours)}h/${gbp(l.overtime_weekend_rate)}, ${n(l.overtime_bank_holiday_hours)}h/${gbp(l.overtime_bank_holiday_rate)} = ${gbp(l.line_amount)}`
+  const otText = t => (t.pricing_model || t.pricingModel) === 'weekly_shift' ? `${n(t.shift_count || t.shiftCount || t.hours)} shift(s), ${gbp(t.calculated_amount || t.calculatedAmount)}` : `${n(t.overtime_week_hours || t.overtimeWeekHours)}h weekday OT, ${n(t.overtime_weekend_hours || t.overtimeWeekendHours)}h weekend OT, ${n(t.overtime_bank_holiday_hours || t.overtimeBankHolidayHours)}h bank holiday OT`
+  const lineText = l => `${cleanDate(l.work_date)} - ${l.staff_name || l.staff_id} - ${n(l.hours)} shift/day(s) x ${gbp(l.hourly_rate)} = ${gbp(l.line_amount)}${l.notes ? ` — ${l.notes}` : ''}`
 
   const createUserForm = (
     <div className="form-grid single">
@@ -153,7 +153,7 @@ export default function OwnerPage({ token }) {
       <select value={invoicePeriodType} onChange={e=>setPeriodType(e.target.value)}><option value="weekly">Weekly</option><option value="monthly">Monthly</option></select>
       <label>Period start<input type="date" value={invoiceStart} onChange={e=>setPeriodStart(e.target.value)} /></label>
       <label>Period end<input type="date" value={invoiceEnd} onChange={e=>{ setInvoiceEnd(e.target.value); setInvoicePreview(null) }} /></label>
-      <input placeholder="standard hourly rate" value={invoiceRate} onChange={e=>{ setInvoiceRate(e.target.value); setInvoicePreview(null) }} />
+      <input placeholder="standard daily/hourly rate" value={invoiceRate} onChange={e=>{ setInvoiceRate(e.target.value); setInvoicePreview(null) }} />
       <input placeholder="overtime weekday hourly rate" value={overtimeWeekRate} onChange={e=>{ setOvertimeWeekRate(e.target.value); setInvoicePreview(null) }} />
       <input placeholder="overtime weekend hourly rate" value={overtimeWeekendRate} onChange={e=>{ setOvertimeWeekendRate(e.target.value); setInvoicePreview(null) }} />
       <input placeholder="overtime bank holiday hourly rate" value={overtimeBankHolidayRate} onChange={e=>{ setOvertimeBankHolidayRate(e.target.value); setInvoicePreview(null) }} />
@@ -185,7 +185,7 @@ export default function OwnerPage({ token }) {
 
       {activeTab === 'timesheets' && <section>
         <div className="section-heading"><div><h4>Timesheets</h4><p>Review pending or approved rows. Invoiced rows are locked to invoices.</p></div><div className="button-row"><button onClick={()=>{ setViewMode('pending'); loadTimes('pending') }}>Pending</button><button className="secondary" onClick={()=>{ setViewMode('approved'); loadTimes('approved') }}>Approved</button></div></div>
-        {Object.keys(grouped).length === 0 ? <p>No timesheets</p> : Object.keys(grouped).map(staffId => <div key={staffId} className="group-block"><h5>Staff: {userMap[staffId]?.name || staffId}</h5><ul className="record-list">{grouped[staffId].map(t => <li key={t.id}><strong>{cleanDate(t.date)}</strong> — {n(t.hours)}h standard — {otText(t)} — {t.status} — Client: {userMap[t.client_id]?.name || t.client_id}<div>{t.notes}</div>{t.return_reason && <div><strong>Return reason:</strong> {t.return_reason}</div>}<button onClick={()=>deleteTimesheet(t.id)}>Delete</button></li>)}</ul></div>)}
+        {Object.keys(grouped).length === 0 ? <p>No timesheets</p> : Object.keys(grouped).map(staffId => <div key={staffId} className="group-block"><h5>Staff: {userMap[staffId]?.name || staffId}</h5><ul className="record-list">{grouped[staffId].map(t => <li key={t.id}><strong>{cleanDate(t.period_start || t.periodStart || t.date)}{(t.period_end || t.periodEnd) ? ` to ${cleanDate(t.period_end || t.periodEnd)}` : ''}</strong> — {otText(t)} — {t.status} — Client: {userMap[t.client_id]?.name || t.client_id}<div>{t.notes}</div>{t.shiftSummary && <div>{t.shiftSummary}</div>}{t.return_reason && <div><strong>Return reason:</strong> {t.return_reason}</div>}<button onClick={()=>deleteTimesheet(t.id)}>Delete</button></li>)}</ul></div>)}
       </section>}
 
       {activeTab === 'invoices' && <section>

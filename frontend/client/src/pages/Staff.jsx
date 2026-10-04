@@ -2,15 +2,39 @@ import React, { useState, useEffect } from 'react'
 import axios from 'axios'
 const API = import.meta.env.VITE_API_URL || ''
 const cleanDate = value => value ? String(value).slice(0, 10) : ''
-const moneyHours = value => Number(value || 0)
+const gbp = value => `£${Number(value || 0).toFixed(2)}`
+const SHIFT_LABELS = { day: 'Day', night: 'Night', bank_holiday_day: 'Bank holiday day', bank_holiday_night: 'Bank holiday night' }
+
+function addDays(isoDate, days) {
+  if (!isoDate) return ''
+  const d = new Date(`${isoDate}T00:00:00Z`)
+  d.setUTCDate(d.getUTCDate() + days)
+  return d.toISOString().slice(0, 10)
+}
+
+function shiftMultiplier(date, type) {
+  if (!date || !type) return 0
+  if (type === 'bank_holiday_day' || type === 'bank_holiday_night') return 2
+  const day = new Date(`${date}T00:00:00Z`).getUTCDay()
+  if (day === 0) return 2
+  if (day === 6) return type === 'night' ? 2 : 1.5
+  return type === 'night' ? 1.5 : 1
+}
+
+function parseShiftPayload(value) {
+  if (!value) return {}
+  try {
+    const rows = typeof value === 'string' ? JSON.parse(value) : value
+    if (!Array.isArray(rows)) return {}
+    return rows.reduce((acc, row) => { if (row.date && row.shiftType) acc[row.date] = row.shiftType; return acc }, {})
+  } catch (_) { return {} }
+}
 
 export default function StaffPage({ token, user }) {
   const [clients, setClients] = useState([])
-  const [date, setDate] = useState('')
-  const [hours, setHours] = useState(8)
-  const [overtimeWeekHours, setOvertimeWeekHours] = useState(0)
-  const [overtimeWeekendHours, setOvertimeWeekendHours] = useState(0)
-  const [overtimeBankHolidayHours, setOvertimeBankHolidayHours] = useState(0)
+  const [weekStart, setWeekStart] = useState('')
+  const [dayRate] = useState(495)
+  const [shifts, setShifts] = useState({})
   const [clientId, setClientId] = useState('')
   const [notes, setNotes] = useState('')
   const [history, setHistory] = useState([])
@@ -34,11 +58,8 @@ export default function StaffPage({ token, user }) {
   }
 
   function resetForm() {
-    setDate('')
-    setHours(8)
-    setOvertimeWeekHours(0)
-    setOvertimeWeekendHours(0)
-    setOvertimeBankHolidayHours(0)
+    setWeekStart('')
+    setShifts({})
     setNotes('')
     setEditingId('')
   }
@@ -46,19 +67,31 @@ export default function StaffPage({ token, user }) {
   function editReturned(t) {
     setEditingId(t.id)
     setClientId(t.client_id || t.clientId || clientId)
-    setDate(cleanDate(t.date || t.period_start || t.periodStart))
-    setHours(t.hours || 8)
-    setOvertimeWeekHours(t.overtime_week_hours || t.overtimeWeekHours || 0)
-    setOvertimeWeekendHours(t.overtime_weekend_hours || t.overtimeWeekendHours || 0)
-    setOvertimeBankHolidayHours(t.overtime_bank_holiday_hours || t.overtimeBankHolidayHours || 0)
+    setWeekStart(cleanDate(t.period_start || t.periodStart || t.date))
+    setShifts(parseShiftPayload(t.shift_payload || t.shiftPayload))
     setNotes(t.notes || '')
   }
 
+  const weekDates = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i)).filter(Boolean)
+  const selectedRows = weekDates.map(date => ({ date, type: shifts[date], multiplier: shiftMultiplier(date, shifts[date]) })).filter(r => r.type)
+  const totalAmount = selectedRows.reduce((sum, r) => sum + (dayRate * r.multiplier), 0)
+
+  function setShift(date, type) {
+    setShifts(current => {
+      const next = { ...current }
+      if (type) next[date] = type
+      else delete next[date]
+      return next
+    })
+  }
+
   function payload() {
-    return { date, hours, clientId, notes, overtimeWeekHours, overtimeWeekendHours, overtimeBankHolidayHours }
+    return { weekStart, dayRate, shifts, clientId, notes }
   }
 
   async function submit() {
+    if (!weekStart) return alert('Select week start')
+    if (selectedRows.length === 0) return alert('Select at least one shift in the week')
     try {
       if (editingId) {
         await axios.patch(`${API}/api/timesheets/${editingId}`, payload(), { headers: { Authorization: `Bearer ${token}` } })
@@ -76,19 +109,19 @@ export default function StaffPage({ token, user }) {
     }
   }
 
-  function overtimeLabel(t) {
-    const week = moneyHours(t.overtime_week_hours || t.overtimeWeekHours)
-    const weekend = moneyHours(t.overtime_weekend_hours || t.overtimeWeekendHours)
-    const bank = moneyHours(t.overtime_bank_holiday_hours || t.overtimeBankHolidayHours)
-    return `OT weekday ${week}h, weekend ${weekend}h, bank holiday ${bank}h`
+  function timesheetLabel(t) {
+    if ((t.pricing_model || t.pricingModel) === 'weekly_shift') {
+      return `${cleanDate(t.period_start || t.periodStart || t.date)} to ${cleanDate(t.period_end || t.periodEnd)} — ${Number(t.shift_count || t.shiftCount || t.hours || 0)} shift(s) — ${gbp(t.calculated_amount || t.calculatedAmount)} — ${t.status}`
+    }
+    return `${cleanDate(t.date)} — ${t.hours}h standard — ${t.status}`
   }
 
   return (
     <div className="panel-card">
       <div className="section-heading">
         <div>
-          <h3>Staff timesheet</h3>
-          <p>{editingId ? 'Edit the returned timesheet and resubmit it.' : 'Submit regular and overtime hours to your assigned client.'}</p>
+          <h3>Staff weekly timesheet</h3>
+          <p>{editingId ? 'Edit the returned weekly timesheet and resubmit it.' : 'Submit a weekly timesheet. Rate is £495 per day with shift multipliers applied automatically.'}</p>
         </div>
       </div>
 
@@ -101,14 +134,26 @@ export default function StaffPage({ token, user }) {
               </select>
             </label>
           )}
-          <label>Work date<input type="date" value={date} onChange={e=>setDate(e.target.value)} /></label>
-          <label>Standard hours<input type="number" min="0" step="0.25" value={hours} onChange={e=>setHours(e.target.value)} /></label>
-          <label>Overtime weekday hours<input type="number" min="0" step="0.25" value={overtimeWeekHours} onChange={e=>setOvertimeWeekHours(e.target.value)} /></label>
-          <label>Overtime weekend hours<input type="number" min="0" step="0.25" value={overtimeWeekendHours} onChange={e=>setOvertimeWeekendHours(e.target.value)} /></label>
-          <label>Overtime bank holiday hours<input type="number" min="0" step="0.25" value={overtimeBankHolidayHours} onChange={e=>setOvertimeBankHolidayHours(e.target.value)} /></label>
+          <label>Week start<input type="date" value={weekStart} onChange={e=>{ setWeekStart(e.target.value); setShifts({}) }} /></label>
+          <div className="span-2 inline-panel">
+            <h4>Weekly shifts</h4>
+            <p>Daily rate: {gbp(dayRate)}. Weeknight and Saturday day = x1.5. Sunday day, Saturday night, Sunday night, bank holiday day/night = x2.</p>
+            {weekDates.length === 0 ? <p>Select a week start to enter shifts.</p> : weekDates.map(date => (
+              <label key={date}>{date}
+                <select value={shifts[date] || ''} onChange={e=>setShift(date, e.target.value)}>
+                  <option value="">Not worked</option>
+                  <option value="day">Day shift x{shiftMultiplier(date, 'day')}</option>
+                  <option value="night">Night shift x{shiftMultiplier(date, 'night')}</option>
+                  <option value="bank_holiday_day">Bank holiday day x2</option>
+                  <option value="bank_holiday_night">Bank holiday night x2</option>
+                </select>
+              </label>
+            ))}
+            <p><strong>Total:</strong> {selectedRows.length} shift(s), {gbp(totalAmount)}</p>
+          </div>
           <label className="span-2">Notes<textarea placeholder="notes" value={notes} onChange={e=>setNotes(e.target.value)} /></label>
           <div className="button-row span-2">
-            <button onClick={submit}>{editingId ? 'Update and resubmit' : 'Submit timesheet'}</button>
+            <button onClick={submit}>{editingId ? 'Update and resubmit' : 'Submit weekly timesheet'}</button>
             {editingId && <button className="secondary" onClick={resetForm}>Cancel edit</button>}
           </div>
         </div>
@@ -123,7 +168,8 @@ export default function StaffPage({ token, user }) {
         <ul className="record-list">
           {history.map(t => (
             <li key={t.id}>
-              <strong>{cleanDate(t.date)}</strong> — {t.hours}h standard — {overtimeLabel(t)} — {t.status} — {t.notes}
+              <strong>{timesheetLabel(t)}</strong>{t.notes ? ` — ${t.notes}` : ''}
+              {t.shiftSummary && <div>{t.shiftSummary}</div>}
               {t.return_reason && <div><strong>Return reason:</strong> {t.return_reason}</div>}
               {t.status === 'returned' && <button onClick={()=>editReturned(t)}>Edit and resubmit</button>}
             </li>

@@ -4,6 +4,7 @@ const API = import.meta.env.VITE_API_URL || ''
 const cleanDate = value => value ? String(value).slice(0, 10) : ''
 const cleanDateTime = value => value ? new Date(value).toLocaleString() : ''
 const h = value => Number(value || 0)
+const gbp = value => `£${Number(value || 0).toFixed(2)}`
 
 export default function ClientPage({ token }) {
   const [list, setList] = useState([])
@@ -59,6 +60,7 @@ export default function ClientPage({ token }) {
   }
 
   function timeSummary(t) {
+    if ((t.pricing_model || t.pricingModel) === 'weekly_shift') return `${cleanDate(t.period_start || t.periodStart || t.date)} to ${cleanDate(t.period_end || t.periodEnd)} — ${h(t.shift_count || t.shiftCount || t.hours)} shift(s), ${gbp(t.calculated_amount || t.calculatedAmount)}`
     return `${h(t.hours)}h standard, ${h(t.overtime_week_hours || t.overtimeWeekHours)}h OT weekday, ${h(t.overtime_weekend_hours || t.overtimeWeekendHours)}h OT weekend, ${h(t.overtime_bank_holiday_hours || t.overtimeBankHolidayHours)}h OT bank holiday`
   }
 
@@ -75,7 +77,7 @@ export default function ClientPage({ token }) {
         <ul className="record-list">
           {list.map(t=> (
             <li key={t.id}>
-              <strong>{cleanDate(t.date)}</strong> — {timeSummary(t)} by {staffName(t)} — {t.notes}
+              <strong>{timeSummary(t)}</strong> by {staffName(t)} — {t.notes}
               <div className="button-row compact"><button onClick={()=>approve(t.id)}>Approve</button><button className="secondary" onClick={()=>returnTimesheet(t.id)}>Return</button></div>
             </li>
           ))}
@@ -88,7 +90,8 @@ export default function ClientPage({ token }) {
         <ul className="record-list">
           {history.map(t => (
             <li key={t.id}>
-              <strong>{cleanDate(t.date)}</strong> — {timeSummary(t)} by {staffName(t)} — {t.status}
+              <strong>{timeSummary(t)}</strong> by {staffName(t)} — {t.status}
+              {t.shiftSummary && <div>{t.shiftSummary}</div>}
               {(t.latest_client_event_type || t.approved_at || t.returned_at) && <div><strong>Client action:</strong> {t.latest_client_event_type || (t.approved_at ? 'approved' : 'returned')} {cleanDateTime(t.latest_client_event_at || t.approved_at || t.returned_at)}</div>}
               {t.approved_at && <div><strong>Approved at:</strong> {cleanDateTime(t.approved_at)}</div>}
               {t.return_reason && <div><strong>Return reason:</strong> {t.return_reason}</div>}
