@@ -147,7 +147,8 @@ export default function OwnerPage({ token }) {
       const m = item.match(/^(\d{4}-\d{2}-\d{2}): (.+?) x([0-9.]+)$/)
       if (!m) return { label: item, amount: null }
       const multiplier = Number(m[3] || 0)
-      return { label: `${m[1]} — ${m[2]} x${multiplier}`, amount: Number(l.hourly_rate || 0) * multiplier }
+      const clientCharge = Number(l.hourly_rate || 0) * multiplier
+      return { label: `${m[1]} — ${m[2]} x${multiplier}`, amount: clientCharge * 0.90, clientCharge }
     })
   }
   function breakdownAmounts(l) {
@@ -162,7 +163,7 @@ export default function OwnerPage({ token }) {
     return <li>
       <strong>{line.staff_name || line.staff_id}</strong>{plainNotes ? ` — ${plainNotes}` : ''}
       <ul className="compact-list nested-list">
-        {shifts.length > 0 ? shifts.map((item, idx) => <li key={idx}>{item.label}{item.amount !== null ? ` — ${gbp(item.amount)}` : ''}</li>) : <li>{cleanDate(line.work_date)} — {n(line.hours)} shift/day(s) x {gbp(line.hourly_rate)} — {gbp(amounts.net || line.line_amount)}</li>}
+        {shifts.length > 0 ? shifts.map((item, idx) => <li key={idx}>{item.label}{item.amount !== null ? ` interim share — ${gbp(item.amount)}` : ''}</li>) : <li>{cleanDate(line.work_date)} — {n(line.hours)} shift/day(s) x {gbp(line.hourly_rate)} interim share — {gbp(amounts.interim || (amounts.net || line.line_amount) * 0.90)}</li>}
         {amounts.consultant > 0 && <li>Consultant fee 10% — {gbp(amounts.consultant)}</li>}
         {amounts.vat > 0 && <li>VAT 20% — {gbp(amounts.vat)}</li>}
         <li><strong>Total — {gbp(line.line_amount)}</strong></li>
