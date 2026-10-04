@@ -134,7 +134,41 @@ export default function OwnerPage({ token }) {
   const managedUserCount = manageableUsers.length
   const totalInvoiceAmount = (summary?.invoices || []).reduce((sum, r) => sum + Number(r.amount || 0), 0)
   const otText = t => (t.pricing_model || t.pricingModel) === 'weekly_shift' ? `${n(t.shift_count || t.shiftCount || t.hours)} shift(s), net ${gbp(t.calculated_amount || t.calculatedAmount)}, consultant ${gbp(t.consultant_fee_amount || t.consultantFeeAmount)}, interim ${gbp(t.interim_amount || t.interimAmount)}, VAT ${gbp(t.vat_amount || t.vatAmount)}, total ${gbp(t.invoice_amount || t.invoiceAmount || t.calculated_amount || t.calculatedAmount)}` : `${n(t.overtime_week_hours || t.overtimeWeekHours)}h weekday OT, ${n(t.overtime_weekend_hours || t.overtimeWeekendHours)}h weekend OT, ${n(t.overtime_bank_holiday_hours || t.overtimeBankHolidayHours)}h bank holiday OT`
-  const lineText = l => `${cleanDate(l.work_date)} - ${l.staff_name || l.staff_id} - ${n(l.hours)} shift/day(s) x ${gbp(l.hourly_rate)} = ${gbp(l.line_amount)}${l.notes ? ` — ${l.notes}` : ''}`
+  function splitInvoiceNotes(notes = '') {
+    const parts = String(notes || '').split(' — ')
+    const shiftSummary = parts.find(p => /\d{4}-\d{2}-\d{2}:/.test(p)) || ''
+    const breakdown = parts.find(p => p.startsWith('Net £')) || ''
+    return { plainNotes: parts.filter(p => p && p !== shiftSummary && p !== breakdown).join(' — '), shiftSummary, breakdown }
+  }
+  function shiftItemsFromLine(l) {
+    const { shiftSummary } = splitInvoiceNotes(l.notes)
+    if (!shiftSummary) return []
+    return shiftSummary.split('; ').filter(Boolean).map(item => {
+      const m = item.match(/^(\d{4}-\d{2}-\d{2}): (.+?) x([0-9.]+)$/)
+      if (!m) return { label: item, amount: null }
+      const multiplier = Number(m[3] || 0)
+      return { label: `${m[1]} — ${m[2]} x${multiplier}`, amount: Number(l.hourly_rate || 0) * multiplier }
+    })
+  }
+  function breakdownAmounts(l) {
+    const { breakdown } = splitInvoiceNotes(l.notes)
+    const get = key => Number((breakdown.match(new RegExp(`${key} £([0-9.]+)`)) || [])[1] || 0)
+    return { net: get('Net'), consultant: get('consultant'), interim: get('interim'), vat: get('VAT') }
+  }
+  function InvoiceLineItem({ line }) {
+    const shifts = shiftItemsFromLine(line)
+    const amounts = breakdownAmounts(line)
+    const { plainNotes } = splitInvoiceNotes(line.notes)
+    return <li>
+      <strong>{line.staff_name || line.staff_id}</strong>{plainNotes ? ` — ${plainNotes}` : ''}
+      <ul className="compact-list nested-list">
+        {shifts.length > 0 ? shifts.map((item, idx) => <li key={idx}>{item.label}{item.amount !== null ? ` — ${gbp(item.amount)}` : ''}</li>) : <li>{cleanDate(line.work_date)} — {n(line.hours)} shift/day(s) x {gbp(line.hourly_rate)} — {gbp(amounts.net || line.line_amount)}</li>}
+        {amounts.consultant > 0 && <li>Consultant fee 10% — {gbp(amounts.consultant)}</li>}
+        {amounts.vat > 0 && <li>VAT 20% — {gbp(amounts.vat)}</li>}
+        <li><strong>Total — {gbp(line.line_amount)}</strong></li>
+      </ul>
+    </li>
+  }
 
   const createUserForm = (
     <div className="form-grid single">
@@ -155,17 +189,17 @@ export default function OwnerPage({ token }) {
       <label>Period end<input type="date" value={invoiceEnd} onChange={e=>{ setInvoiceEnd(e.target.value); setInvoicePreview(null) }} /></label>
       <p className="notice">Rates are calculated automatically from approved timesheets.</p>
       <div className="button-row"><button onClick={previewInvoice}>Preview invoice</button><button onClick={generateInvoice}>Generate invoice</button></div>
-      {invoicePreview && <div className="inline-panel"><h5>Invoice preview</h5>{invoicePreview.count === 0 ? <p>{invoicePreview.message || 'No approved uninvoiced timesheets found.'}</p> : <><p>{invoicePreview.count} line(s), {n(invoicePreview.totalHours)} shift/day(s), {gbp(invoicePreview.totalAmount)}</p><ul className="record-list compact-list">{previewLines.map(l => <li key={l.timesheet_id}>{lineText(l)}</li>)}</ul></>}</div>}
+      {invoicePreview && <div className="inline-panel"><h5>Invoice preview</h5>{invoicePreview.count === 0 ? <p>{invoicePreview.message || 'No approved uninvoiced timesheets found.'}</p> : <><p>{invoicePreview.count} line(s), {n(invoicePreview.totalHours)} shift/day(s), {gbp(invoicePreview.totalAmount)}</p><ul className="record-list compact-list">{previewLines.map(l => <InvoiceLineItem key={l.timesheet_id} line={l} />)}</ul></>}</div>}
     </div>
   )
 
   const invoiceDetail = selectedInvoice && (
-    <div className="inline-panel flat"><p><strong>{selectedInvoice.invoice_number}</strong> — {cleanDate(selectedInvoice.period_start)} to {cleanDate(selectedInvoice.period_end)} — {n(selectedInvoice.total_hours)}h — {gbp(selectedInvoice.total_amount)} — {selectedInvoice.status}</p>{detailLines.length > 0 ? <ul className="record-list compact-list">{detailLines.map(l => <li key={l.id || l.timesheet_id}>{lineText(l)} {l.notes ? `— ${l.notes}` : ''}</li>)}</ul> : <p>No invoice line detail stored for this invoice.</p>}</div>
+    <div className="inline-panel flat"><p><strong>{selectedInvoice.invoice_number}</strong> — {cleanDate(selectedInvoice.period_start)} to {cleanDate(selectedInvoice.period_end)} — {n(selectedInvoice.total_hours)}h — {gbp(selectedInvoice.total_amount)} — {selectedInvoice.status}</p>{detailLines.length > 0 ? <ul className="record-list compact-list">{detailLines.map(l => <InvoiceLineItem key={l.id || l.timesheet_id} line={l} />)}</ul> : <p>No invoice line detail stored for this invoice.</p>}</div>
   )
 
   return (
     <div className="panel-card owner-console">
-      <div className="section-heading"><div><h3>Owner Console</h3><p>Oversight, users, timesheets, and invoice operations.</p></div><button className="secondary" onClick={refreshAll}>Refresh all</button></div>
+      <div className="section-heading"><div><h3>Owner Console</h3><p>Oversight, users, timesheets, and invoice operations.</p></div></div>
       <div className="tabs">{['summary','users','timesheets','invoices'].map(tab => <button key={tab} className={activeTab === tab ? 'active' : 'secondary'} onClick={()=>setActiveTab(tab)}>{tab[0].toUpperCase()+tab.slice(1)}</button>)}</div>
 
       {activeTab === 'summary' && summary && <div className="summary-grid">
@@ -173,7 +207,7 @@ export default function OwnerPage({ token }) {
       </div>}
 
       {activeTab === 'users' && <section>
-        <div className="section-heading"><div><h4>People</h4><p>Owners are kept out of operational user management. Clients, interim workers and consultants show their assignments.</p></div><div className="button-row"><button onClick={()=>setShowCreateUser(true)}>Create user</button><button className="secondary" onClick={loadUsers}>Refresh users</button></div></div>
+        <div className="section-heading"><div><h4>People</h4><p>Owners are kept out of operational user management. Clients, interim workers and consultants show their assignments.</p></div><div className="button-row"><button onClick={()=>setShowCreateUser(true)}>Create user</button></div></div>
         {ownerUsers.length > 0 && <p className="notice">Owner account is excluded from the operational lists: {ownerUsers.map(o => o.email).join(', ')}</p>}
         <div className="tabs compact-tabs"><button className={peopleTab === 'clients' ? 'active' : 'secondary'} onClick={()=>setPeopleTab('clients')}>Clients</button><button className={peopleTab === 'staff' ? 'active' : 'secondary'} onClick={()=>setPeopleTab('staff')}>Interim</button><button className={peopleTab === 'consultants' ? 'active' : 'secondary'} onClick={()=>setPeopleTab('consultants')}>Consultants</button></div>
         {peopleTab === 'clients' && <ul className="record-list">{clientUsers.map(c => <li key={c.id}><strong>{c.name}</strong> ({c.email}) — Joined: {cleanDate(c.joined_at) || 'n/a'} — {staffByClient[c.id]?.length || 0} interim, {consultantsByClient[c.id]?.length || 0} consultant(s){submittersByClient[c.id]?.length > 0 && <div className="chips">{submittersByClient[c.id].map(s => <span key={s.id}>{s.name} ({s.email}) — {s.role === 'staff' ? 'interim' : s.role}</span>)}</div>}<button onClick={()=>deleteUser(c.id)}>Delete client</button></li>)}</ul>}
