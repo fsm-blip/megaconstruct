@@ -1220,10 +1220,10 @@ app.get('/api/staffs', authMiddleware, async (req, res) => {
   if (!['owner','staff','consultant','client'].includes(req.user.role)) return res.status(403).json({ error: 'Forbidden' });
   try {
     if (useSqlite) {
-      const rows = sqliteDb.prepare("SELECT id,name,email,joined_at FROM users WHERE role = 'staff'").all();
+      const rows = sqliteDb.prepare("SELECT id,name,email,joined_at,role,client_id FROM users WHERE role IN ('staff','consultant','owner')").all();
       return res.json(rows);
     }
-    const r = await pool.query("SELECT id,name,email,joined_at FROM users WHERE role = 'staff'");
+    const r = await pool.query("SELECT id,name,email,joined_at,role,client_id FROM users WHERE role IN ('staff','consultant','owner')");
     res.json(r.rows);
   } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
 });

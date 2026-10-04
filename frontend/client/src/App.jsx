@@ -322,10 +322,7 @@ export default function App() {
           {user.role === 'staff' && <StaffPage token={token} user={user} />}
           {user.role === 'consultant' && <StaffPage token={token} user={user} />}
           {user.role === 'client' && <ClientPage token={token} />}
-          {user.role === 'owner' && <>
-            <OwnerPage token={token} />
-            <StaffPage token={token} user={user} />
-          </>}
+          {user.role === 'owner' && <OwnerPage token={token} />}
         </div>
       )}
     </div>

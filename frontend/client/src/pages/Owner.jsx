@@ -46,10 +46,6 @@ export default function OwnerPage({ token }) {
   const [invoiceClientId, setInvoiceClientId] = useState('')
   const [invoiceStart, setInvoiceStart] = useState('')
   const [invoiceEnd, setInvoiceEnd] = useState('')
-  const [invoiceRate, setInvoiceRate] = useState('')
-  const [overtimeWeekRate, setOvertimeWeekRate] = useState('')
-  const [overtimeWeekendRate, setOvertimeWeekendRate] = useState('')
-  const [overtimeBankHolidayRate, setOvertimeBankHolidayRate] = useState('')
   const [invoicePreview, setInvoicePreview] = useState(null)
   const [selectedInvoice, setSelectedInvoice] = useState(null)
   const [summary, setSummary] = useState(null)
@@ -61,7 +57,7 @@ export default function OwnerPage({ token }) {
 
   function headers() { return { Authorization: `Bearer ${token}` } }
   function refreshAll() { loadUsers(); loadClients(); loadSummary(); loadTimes(viewMode); loadInvoices() }
-  function invoicePayload() { return { clientId: invoiceClientId, periodType: invoicePeriodType, periodStart: invoiceStart, periodEnd: invoiceEnd, hourlyRate: Number(invoiceRate), overtimeWeekRate: Number(overtimeWeekRate || 0), overtimeWeekendRate: Number(overtimeWeekendRate || 0), overtimeBankHolidayRate: Number(overtimeBankHolidayRate || 0) } }
+  function invoicePayload() { return { clientId: invoiceClientId, periodType: invoicePeriodType, periodStart: invoiceStart, periodEnd: invoiceEnd } }
   function setPeriodType(value) { setInvoicePeriodType(value); if (invoiceStart) setInvoiceEnd(value === 'monthly' ? endOfMonth(invoiceStart) : addDays(invoiceStart, 6)); setInvoicePreview(null) }
   function setPeriodStart(value) { setInvoiceStart(value); setInvoiceEnd(value ? (invoicePeriodType === 'monthly' ? endOfMonth(value) : addDays(value, 6)) : ''); setInvoicePreview(null) }
 
@@ -82,7 +78,7 @@ export default function OwnerPage({ token }) {
     if (!name || !email || !password || !role) return alert('Please fill all fields')
     try {
       const payload = { name, email, password, role }
-      if (role === 'staff' && assignClient) payload.clientId = assignClient
+      if (['staff','consultant'].includes(role) && assignClient) payload.clientId = assignClient
       await axios.post(`${API}/api/users`, payload, { headers: headers() })
       alert('User created (invitation sent)')
       setName(''); setEmail(''); setPassword(''); setRole('staff'); setShowCreateUser(false)
@@ -91,12 +87,12 @@ export default function OwnerPage({ token }) {
   }
 
   async function previewInvoice() {
-    if (!invoiceClientId || !invoiceStart || !invoiceEnd || !invoiceRate) return alert('Select client, period and standard hourly rate')
+    if (!invoiceClientId || !invoiceStart || !invoiceEnd) return alert('Select client and period')
     try { const r = await axios.post(`${API}/api/invoices/preview`, invoicePayload(), { headers: headers() }); setInvoicePreview(r.data) }
     catch (e) { console.error('previewInvoice', e); alert(e.response?.data?.error || 'Invoice preview failed') }
   }
   async function generateInvoice() {
-    if (!invoiceClientId || !invoiceStart || !invoiceEnd || !invoiceRate) return alert('Select client, period and standard hourly rate')
+    if (!invoiceClientId || !invoiceStart || !invoiceEnd) return alert('Select client and period')
     if (!invoicePreview || invoicePreview.count === 0) return alert('Preview the invoice first and confirm it has approved uninvoiced timesheets')
     try {
       const r = await axios.post(`${API}/api/invoices/generate`, invoicePayload(), { headers: headers() })
@@ -126,8 +122,11 @@ export default function OwnerPage({ token }) {
   const clientUsers = users.filter(u => u.role === 'client')
   const manageableUsers = users.filter(u => u.role !== 'owner')
   const userMap = users.reduce((acc, u) => { acc[u.id] = u; return acc }, {})
+  const submittersByClient = clientUsers.reduce((acc, c) => { acc[c.id] = [...staffUsers, ...consultantUsers].filter(s => s.client_id === c.id); return acc }, {})
   const staffByClient = clientUsers.reduce((acc, c) => { acc[c.id] = staffUsers.filter(s => s.client_id === c.id); return acc }, {})
+  const consultantsByClient = clientUsers.reduce((acc, c) => { acc[c.id] = consultantUsers.filter(s => s.client_id === c.id); return acc }, {})
   const unassignedStaff = staffUsers.filter(s => !s.client_id || !userMap[s.client_id])
+  const unassignedConsultants = consultantUsers.filter(s => !s.client_id || !userMap[s.client_id])
   const grouped = times.reduce((acc, t) => { acc[t.staff_id] = acc[t.staff_id] || []; acc[t.staff_id].push(t); return acc }, {})
   const previewLines = invoicePreview?.lines || []
   const detailLines = selectedInvoice?.lines || []
@@ -143,7 +142,7 @@ export default function OwnerPage({ token }) {
       <input placeholder="email" value={email} onChange={e=>setEmail(e.target.value)} />
       <input placeholder="password" value={password} onChange={e=>setPassword(e.target.value)} />
       <select value={role} onChange={e=>setRole(e.target.value)}><option value="staff">interim</option><option value="consultant">consultant</option><option value="client">client</option></select>
-      {role === 'staff' && <label>Assign client<select value={assignClient} onChange={e=>setAssignClient(e.target.value)}>{clients.map(c=> <option key={c.id} value={c.id}>{c.name} ({c.email})</option>)}</select></label>}
+      {['staff','consultant'].includes(role) && <label>Assign client<select value={assignClient} onChange={e=>setAssignClient(e.target.value)}>{clients.map(c=> <option key={c.id} value={c.id}>{c.name} ({c.email})</option>)}</select></label>}
       <button onClick={createUser}>Create</button>
     </div>
   )
@@ -154,12 +153,9 @@ export default function OwnerPage({ token }) {
       <select value={invoicePeriodType} onChange={e=>setPeriodType(e.target.value)}><option value="weekly">Weekly</option><option value="monthly">Monthly</option></select>
       <label>Period start<input type="date" value={invoiceStart} onChange={e=>setPeriodStart(e.target.value)} /></label>
       <label>Period end<input type="date" value={invoiceEnd} onChange={e=>{ setInvoiceEnd(e.target.value); setInvoicePreview(null) }} /></label>
-      <input placeholder="standard daily/hourly rate" value={invoiceRate} onChange={e=>{ setInvoiceRate(e.target.value); setInvoicePreview(null) }} />
-      <input placeholder="overtime weekday hourly rate" value={overtimeWeekRate} onChange={e=>{ setOvertimeWeekRate(e.target.value); setInvoicePreview(null) }} />
-      <input placeholder="overtime weekend hourly rate" value={overtimeWeekendRate} onChange={e=>{ setOvertimeWeekendRate(e.target.value); setInvoicePreview(null) }} />
-      <input placeholder="overtime bank holiday hourly rate" value={overtimeBankHolidayRate} onChange={e=>{ setOvertimeBankHolidayRate(e.target.value); setInvoicePreview(null) }} />
+      <p className="notice">Rates are calculated automatically from approved timesheets.</p>
       <div className="button-row"><button onClick={previewInvoice}>Preview invoice</button><button onClick={generateInvoice}>Generate invoice</button></div>
-      {invoicePreview && <div className="inline-panel"><h5>Invoice preview</h5>{invoicePreview.count === 0 ? <p>{invoicePreview.message || 'No approved uninvoiced timesheets found.'}</p> : <><p>{invoicePreview.count} line(s), {n(invoicePreview.totalHours)}h standard, {n(invoicePreview.totalOvertimeWeekHours)}h weekday OT, {n(invoicePreview.totalOvertimeWeekendHours)}h weekend OT, {n(invoicePreview.totalOvertimeBankHolidayHours)}h bank holiday OT, {gbp(invoicePreview.totalAmount)}</p><ul className="record-list compact-list">{previewLines.map(l => <li key={l.timesheet_id}>{lineText(l)}</li>)}</ul></>}</div>}
+      {invoicePreview && <div className="inline-panel"><h5>Invoice preview</h5>{invoicePreview.count === 0 ? <p>{invoicePreview.message || 'No approved uninvoiced timesheets found.'}</p> : <><p>{invoicePreview.count} line(s), {n(invoicePreview.totalHours)} shift/day(s), {gbp(invoicePreview.totalAmount)}</p><ul className="record-list compact-list">{previewLines.map(l => <li key={l.timesheet_id}>{lineText(l)}</li>)}</ul></>}</div>}
     </div>
   )
 
@@ -180,10 +176,10 @@ export default function OwnerPage({ token }) {
         <div className="section-heading"><div><h4>People</h4><p>Owners are kept out of operational user management. Clients, interim workers and consultants show their assignments.</p></div><div className="button-row"><button onClick={()=>setShowCreateUser(true)}>Create user</button><button className="secondary" onClick={loadUsers}>Refresh users</button></div></div>
         {ownerUsers.length > 0 && <p className="notice">Owner account is excluded from the operational lists: {ownerUsers.map(o => o.email).join(', ')}</p>}
         <div className="tabs compact-tabs"><button className={peopleTab === 'clients' ? 'active' : 'secondary'} onClick={()=>setPeopleTab('clients')}>Clients</button><button className={peopleTab === 'staff' ? 'active' : 'secondary'} onClick={()=>setPeopleTab('staff')}>Interim</button><button className={peopleTab === 'consultants' ? 'active' : 'secondary'} onClick={()=>setPeopleTab('consultants')}>Consultants</button></div>
-        {peopleTab === 'clients' && <ul className="record-list">{clientUsers.map(c => <li key={c.id}><strong>{c.name}</strong> ({c.email}) — Joined: {cleanDate(c.joined_at) || 'n/a'} — {staffByClient[c.id]?.length || 0} assigned interim{staffByClient[c.id]?.length > 0 && <div className="chips">{staffByClient[c.id].map(s => <span key={s.id}>{s.name} ({s.email})</span>)}</div>}<button onClick={()=>deleteUser(c.id)}>Delete client</button></li>)}</ul>}
+        {peopleTab === 'clients' && <ul className="record-list">{clientUsers.map(c => <li key={c.id}><strong>{c.name}</strong> ({c.email}) — Joined: {cleanDate(c.joined_at) || 'n/a'} — {staffByClient[c.id]?.length || 0} interim, {consultantsByClient[c.id]?.length || 0} consultant(s){submittersByClient[c.id]?.length > 0 && <div className="chips">{submittersByClient[c.id].map(s => <span key={s.id}>{s.name} ({s.email}) — {s.role === 'staff' ? 'interim' : s.role}</span>)}</div>}<button onClick={()=>deleteUser(c.id)}>Delete client</button></li>)}</ul>}
         {peopleTab === 'staff' && <ul className="record-list">{staffUsers.map(s => <li key={s.id}><strong>{s.name}</strong> ({s.email}) — Joined: {cleanDate(s.joined_at) || 'n/a'} — assigned client: {userMap[s.client_id]?.name || 'Unassigned'}{!userMap[s.client_id] && <span className="badge danger-badge">needs assignment</span>}<button onClick={()=>deleteUser(s.id)}>Delete interim</button></li>)}{unassignedStaff.length === 0 && staffUsers.length === 0 && <li>No interim users.</li>}</ul>}
 
-        {peopleTab === 'consultants' && <ul className="record-list">{consultantUsers.map(c => <li key={c.id}><strong>{c.name}</strong> ({c.email}) — Joined: {cleanDate(c.joined_at) || 'n/a'}<button onClick={()=>deleteUser(c.id)}>Delete consultant</button></li>)}{consultantUsers.length === 0 && <li>No consultant users.</li>}</ul>}
+        {peopleTab === 'consultants' && <ul className="record-list">{consultantUsers.map(c => <li key={c.id}><strong>{c.name}</strong> ({c.email}) — Joined: {cleanDate(c.joined_at) || 'n/a'} — assigned client: {userMap[c.client_id]?.name || 'Unassigned'}{!userMap[c.client_id] && <span className="badge danger-badge">needs assignment</span>}<button onClick={()=>deleteUser(c.id)}>Delete consultant</button></li>)}{unassignedConsultants.length === 0 && consultantUsers.length === 0 && <li>No consultant users.</li>}</ul>}
       </section>}
 
       {activeTab === 'timesheets' && <section>
